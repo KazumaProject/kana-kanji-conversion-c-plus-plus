@@ -21,12 +21,17 @@ if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 # ---- mozc fetch tool ----
-find_package(CURL REQUIRED)
-
-add_executable(mozc_dic_fetch
-  src/dictionary_builder/mozc_fetch/mozc_fetch.cpp
-)
-target_link_libraries(mozc_dic_fetch PRIVATE CURL::libcurl)
+# NOTE: In some environments CMake may resolve CURL::libcurl to a static libcurl
+# that requires additional transitive system libraries. Make the fetch tool
+# opt-in so the rest of the project can build cleanly.
+option(BUILD_MOZC_FETCH "Build mozc_dic_fetch (requires a fully linkable libcurl)" OFF)
+if(BUILD_MOZC_FETCH)
+  find_package(CURL REQUIRED)
+  add_executable(mozc_dic_fetch
+    src/dictionary_builder/mozc_fetch/mozc_fetch.cpp
+  )
+  target_link_libraries(mozc_dic_fetch PRIVATE CURL::libcurl)
+endif()
 
 # -----------------------------
 # Dictionary builder libs
@@ -34,9 +39,12 @@ target_link_libraries(mozc_dic_fetch PRIVATE CURL::libcurl)
 
 add_library(louds_utf16 STATIC
   src/dictionary_builder/louds_builder/prefix_tree/prefix_tree_utf16.cpp
+  src/dictionary_builder/louds_builder/prefix_tree_with_term_id/prefix_tree_with_term_id_utf16.cpp
   src/dictionary_builder/louds_builder/louds/louds_utf16_writer.cpp
   src/dictionary_builder/louds_builder/louds/louds_converter_utf16.cpp
   src/dictionary_builder/louds_builder/louds/louds_utf16_reader.cpp
+  src/dictionary_builder/louds_builder/louds_with_term_id/louds_with_term_id_utf16.cpp
+  src/dictionary_builder/louds_builder/louds_with_term_id/louds_converter_with_term_id_utf16.cpp
 )
 
 target_include_directories(louds_utf16 PUBLIC
@@ -51,6 +59,16 @@ target_include_directories(connection_id PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src/dictionary_builder
 )
 
+# TokenArray (posting lists keyed by yomi termId)
+add_library(token_array STATIC
+  src/dictionary_builder/token_array/token_array.cpp
+)
+target_include_directories(token_array PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/dictionary_builder
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/dictionary_builder/louds_builder
+)
+target_link_libraries(token_array PUBLIC louds_utf16)
+
 # -----------------------------
 # Dictionary builder executable
 # -----------------------------
@@ -62,6 +80,19 @@ add_executable(dictionary_builder
 target_link_libraries(dictionary_builder PRIVATE
   louds_utf16
   connection_id
+)
+
+# -----------------------------
+# Tries + TokenArray builder (Kotlin buildTriesAndTokenArray equivalent)
+# -----------------------------
+
+add_executable(tries_token_builder
+  src/dictionary_builder/tries_token_builder.cpp
+)
+
+target_link_libraries(tries_token_builder PRIVATE
+  louds_utf16
+  token_array
 )
 
 # -----------------------------
