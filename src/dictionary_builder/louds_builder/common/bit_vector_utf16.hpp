@@ -32,6 +32,7 @@ public:
 
     void push_back(bool v) { set(nbits_, v); }
 
+    // rank0(index): 0..index (inclusive) の 0 の数
     int rank0(int index) const
     {
         if (nbits_ == 0)
@@ -46,6 +47,7 @@ public:
         return static_cast<int>(idx + 1) - ones;
     }
 
+    // rank1(index): 0..index (inclusive) の 1 の数
     int rank1(int index) const
     {
         if (nbits_ == 0)
@@ -58,7 +60,10 @@ public:
         return rank1_internal(idx);
     }
 
+    // select0(nodeId): nodeId番目(1-indexed)の 0 の位置
     int select0(int nodeId) const { return select_internal(false, nodeId); }
+
+    // select1(nodeId): nodeId番目(1-indexed)の 1 の位置
     int select1(int nodeId) const { return select_internal(true, nodeId); }
 
     const std::vector<uint64_t> &words() const { return words_; }

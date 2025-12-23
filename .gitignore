@@ -73,3 +73,5 @@ Thumbs.db
 # ----------------------------------------------------------------------
 # コンパイル時の依存関係ファイル
 *.d
+
+src/dictionary_builder/mozc_fetch/dictionary*.txt

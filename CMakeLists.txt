@@ -22,44 +22,23 @@ if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
-# -----------------------------
-# Library: core sources
-# -----------------------------
-add_library(core STATIC
-  # prefix
-  src/prefix/prefix_tree.cpp
+# ---- mozc fetch tool ----
+find_package(CURL REQUIRED)
 
-  # louds
-  src/louds/converter.cpp
-  src/louds/louds.cpp
-
-  # termId prefix
-  src/prefix_with_term_id/prefix_tree_with_term_id.cpp
-
-  # termId louds
-  src/louds_with_term_id/converter_with_term_id.cpp
-  src/louds_with_term_id/louds_with_term_id.cpp
+add_executable(mozc_dic_fetch
+  src/dictionary_builder/mozc_fetch/mozc_fetch.cpp
 )
 
-target_include_directories(core PUBLIC
-  ${CMAKE_CURRENT_SOURCE_DIR}/src
-)
-
-target_compile_features(core PUBLIC cxx_std_20)
+target_link_libraries(mozc_dic_fetch PRIVATE CURL::libcurl)
 
 # -----------------------------
-# Tests
+# LOUDS builder
 # -----------------------------
-enable_testing()
 
-add_executable(test_louds
-  tests/test_louds.cpp
-)
-target_link_libraries(test_louds PRIVATE core)
-add_test(NAME test_louds COMMAND test_louds)
+# prefix (UTF-16)
+src/dictionary_builder/louds_builder/prefix_tree/prefix_tree_utf16.cpp
 
-add_executable(test_louds_with_term_id
-  tests/test_louds_with_term_id.cpp
-)
-target_link_libraries(test_louds_with_term_id PRIVATE core)
-add_test(NAME test_louds_with_term_id COMMAND test_louds_with_term_id)
+# louds (UTF-16)
+src/dictionary_builder/louds_builder/louds/louds_utf16_writer.cpp
+src/dictionary_builder/louds_builder/louds/louds_converter_utf16.cpp
+src/dictionary_builder/louds_builder/louds/louds_utf16_reader.cpp

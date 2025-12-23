@@ -2,9 +2,8 @@
 #include <cstdint>
 #include <vector>
 #include <algorithm>
-#include <stdexcept>
 
-#include "common/bit_vector.hpp"
+#include "common/bit_vector_utf16.hpp"
 
 // Kotlin の SuccinctBitVector 相当。
 // - big block: 256 bits
@@ -25,7 +24,6 @@ public:
     }
 
     int size() const { return n_; }
-
     int totalOnes() const { return totalOnes_; }
 
     // rank1(index): 0..index (inclusive) の 1 の数
@@ -45,7 +43,9 @@ public:
 
         const int globalSmallIndex = bigIndex * numSmallBlocksPerBig_ + smallIndex;
 
-        int rankBase = bigBlockRanks_[static_cast<size_t>(bigIndex)] + smallBlockRanks_[static_cast<size_t>(globalSmallIndex)];
+        int rankBase =
+            bigBlockRanks_[static_cast<size_t>(bigIndex)] +
+            smallBlockRanks_[static_cast<size_t>(globalSmallIndex)];
 
         int additional = 0;
         const int smallStart = bigIndex * bigBlockSize_ + smallIndex * smallBlockSize_;
@@ -120,7 +120,8 @@ public:
         }
 
         const int globalSmallIndex = baseSmallIndex + smallBlock;
-        const int offsetInSmallBlock = localTarget - smallBlockRanks_[static_cast<size_t>(globalSmallIndex)];
+        const int offsetInSmallBlock =
+            localTarget - smallBlockRanks_[static_cast<size_t>(globalSmallIndex)];
 
         const int smallStart = bigBlock * bigBlockSize_ + smallBlock * smallBlockSize_;
         int count = 0;
@@ -148,7 +149,6 @@ public:
         if (nodeId < 1 || nodeId > totalZeros)
             return -1;
 
-        // zerosBeforeBlock = (blockStartBits) - onesBeforeBlock
         int lo = 0;
         int hi = static_cast<int>(bigBlockRanks_.size()) - 1;
         int bigBlock = 0;
@@ -169,7 +169,8 @@ public:
             }
         }
 
-        const int zerosBeforeBlock = bigBlock * bigBlockSize_ - bigBlockRanks_[static_cast<size_t>(bigBlock)];
+        const int zerosBeforeBlock =
+            bigBlock * bigBlockSize_ - bigBlockRanks_[static_cast<size_t>(bigBlock)];
         const int localTarget = nodeId - zerosBeforeBlock;
 
         const int baseSmallIndex = bigBlock * numSmallBlocksPerBig_;
@@ -180,8 +181,6 @@ public:
         int smallBlock = 0;
         while (smallBlock < smallBlocksInThisBig - 1)
         {
-            // zeros up to next small block start within this big block:
-            // nextZeros = (bitsBeforeNextSmall) - (onesBeforeNextSmallWithinBig)
             const int nextSmall = smallBlock + 1;
             const int nextGlobal = baseSmallIndex + nextSmall;
             const int onesBeforeNextSmall = smallBlockRanks_[static_cast<size_t>(nextGlobal)];
@@ -261,9 +260,10 @@ private:
                 if (globalSmall >= numSmallBlocks)
                     break;
 
-                smallBlockRanks_[static_cast<size_t>(globalSmall)] = rank - bigBlockRanks_[static_cast<size_t>(big)];
-                const int smallStart = bigStart + small * smallBlockSize_;
+                smallBlockRanks_[static_cast<size_t>(globalSmall)] =
+                    rank - bigBlockRanks_[static_cast<size_t>(big)];
 
+                const int smallStart = bigStart + small * smallBlockSize_;
                 for (int j = 0; j < smallBlockSize_; ++j)
                 {
                     const int pos = smallStart + j;
