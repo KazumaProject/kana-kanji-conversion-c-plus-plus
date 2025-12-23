@@ -1,4 +1,4 @@
-// src/mozc_fetch/mozc_fetch.cpp
+// src/dictionary_builder/mozc_fetch/mozc_fetch.cpp
 //
 // Downloads Mozc dictionary00.txt..dictionary09.txt, parses TSV columns as:
 // reading (string), left_id (int16), right_id (int16), score (int16), word (string)
@@ -6,10 +6,11 @@
 // Builds reading -> list of (word, flag)
 // Sort keys by: (1) shorter reading first (by Unicode codepoint count), (2) hiragana order (lexicographic by codepoints)
 // Prints per-file entry count and text size, plus totals and random samples.
+// Also downloads connection_single_column.txt.
 //
 // Build (Ubuntu):
 //   sudo apt-get install -y g++ libcurl4-openssl-dev
-//   g++ -std=c++20 -O2 src/mozc_fetch/mozc_fetch.cpp -lcurl -o mozc_dic_fetch
+//   g++ -std=c++20 -O2 src/dictionary_builder/mozc_fetch/mozc_fetch.cpp -lcurl -o mozc_dic_fetch
 // Run:
 //   ./mozc_dic_fetch
 
@@ -165,7 +166,7 @@ static bool split5_tabs(std::string_view line,
 }
 
 // --------------------
-// UTF-8 helpers (codepoint decode, compare, and script classification)
+// UTF-8 helpers (decode, compare, and script classification)
 // --------------------
 static bool utf8_next_codepoint(const std::string &s, size_t &i, char32_t &out_cp)
 {
@@ -174,7 +175,6 @@ static bool utf8_next_codepoint(const std::string &s, size_t &i, char32_t &out_c
 
     const unsigned char c0 = static_cast<unsigned char>(s[i]);
 
-    // 1-byte
     if (c0 < 0x80)
     {
         out_cp = static_cast<char32_t>(c0);
@@ -182,7 +182,6 @@ static bool utf8_next_codepoint(const std::string &s, size_t &i, char32_t &out_c
         return true;
     }
 
-    // 2-byte
     if ((c0 & 0xE0) == 0xC0)
     {
         if (i + 1 >= s.size())
@@ -193,7 +192,7 @@ static bool utf8_next_codepoint(const std::string &s, size_t &i, char32_t &out_c
 
         char32_t cp = static_cast<char32_t>(c0 & 0x1F);
         cp = (cp << 6) | static_cast<char32_t>(c1 & 0x3F);
-        if (cp < 0x80) // overlong
+        if (cp < 0x80)
             return false;
 
         out_cp = cp;
@@ -201,7 +200,6 @@ static bool utf8_next_codepoint(const std::string &s, size_t &i, char32_t &out_c
         return true;
     }
 
-    // 3-byte
     if ((c0 & 0xF0) == 0xE0)
     {
         if (i + 2 >= s.size())
@@ -214,9 +212,9 @@ static bool utf8_next_codepoint(const std::string &s, size_t &i, char32_t &out_c
         char32_t cp = static_cast<char32_t>(c0 & 0x0F);
         cp = (cp << 6) | static_cast<char32_t>(c1 & 0x3F);
         cp = (cp << 6) | static_cast<char32_t>(c2 & 0x3F);
-        if (cp < 0x800) // overlong
+        if (cp < 0x800)
             return false;
-        if (cp >= 0xD800 && cp <= 0xDFFF) // surrogate
+        if (cp >= 0xD800 && cp <= 0xDFFF)
             return false;
 
         out_cp = cp;
@@ -224,7 +222,6 @@ static bool utf8_next_codepoint(const std::string &s, size_t &i, char32_t &out_c
         return true;
     }
 
-    // 4-byte
     if ((c0 & 0xF8) == 0xF0)
     {
         if (i + 3 >= s.size())
@@ -239,7 +236,7 @@ static bool utf8_next_codepoint(const std::string &s, size_t &i, char32_t &out_c
         cp = (cp << 6) | static_cast<char32_t>(c1 & 0x3F);
         cp = (cp << 6) | static_cast<char32_t>(c2 & 0x3F);
         cp = (cp << 6) | static_cast<char32_t>(c3 & 0x3F);
-        if (cp < 0x10000) // overlong
+        if (cp < 0x10000)
             return false;
         if (cp > 0x10FFFF)
             return false;
@@ -261,7 +258,7 @@ static size_t utf8_codepoint_count(const std::string &s)
     {
         const size_t prev = i;
         if (!utf8_next_codepoint(s, i, cp))
-            i = prev + 1; // fallback
+            i = prev + 1;
         ++count;
     }
     return count;
@@ -313,7 +310,6 @@ static bool is_hiragana_cp(char32_t cp)
 
 static bool is_katakana_cp(char32_t cp)
 {
-    // Katakana + Katakana Phonetic Extensions + Halfwidth Katakana
     if (cp >= 0x30A0 && cp <= 0x30FF)
         return true;
     if (cp >= 0x31F0 && cp <= 0x31FF)
@@ -325,14 +321,12 @@ static bool is_katakana_cp(char32_t cp)
 
 static bool is_common_allowed_for_both(char32_t cp)
 {
-    // Prolonged sound mark "ー"
-    return (cp == 0x30FC);
+    return (cp == 0x30FC); // "ー"
 }
 
 static bool is_katakana_extra_allowed(char32_t cp)
 {
-    // Middle dot "・" for katakana compounds
-    return (cp == 0x30FB);
+    return (cp == 0x30FB); // "・"
 }
 
 static WordScript classify_word_script_utf8(const std::string &word)
@@ -349,7 +343,6 @@ static WordScript classify_word_script_utf8(const std::string &word)
         const size_t prev = i;
         if (!utf8_next_codepoint(word, i, cp))
         {
-            // invalid byte => Other
             has_other = true;
             i = prev + 1;
             continue;
@@ -370,7 +363,6 @@ static WordScript classify_word_script_utf8(const std::string &word)
             continue;
         }
 
-        // Anything else (kanji, latin, digits, punctuation, etc.)
         has_other = true;
     }
 
@@ -489,6 +481,15 @@ static void print_random_samples(
     }
 }
 
+static bool file_exists_nonempty(const std::filesystem::path &p)
+{
+    if (!std::filesystem::exists(p))
+        return false;
+    std::error_code ec;
+    const auto sz = std::filesystem::file_size(p, ec);
+    return (!ec && sz > 0);
+}
+
 int main()
 {
     try
@@ -502,7 +503,6 @@ int main()
         std::uintmax_t total_bytes = 0;
         std::uint64_t total_entries = 0;
 
-        // reading -> list of (word, script)
         std::unordered_map<std::string, std::vector<WordItem>> reading_to_words;
         reading_to_words.reserve(800000);
 
@@ -512,16 +512,7 @@ int main()
             const std::string url = base_url + fname;
             const std::filesystem::path out_path = out_dir / fname;
 
-            bool need_download = true;
-            if (std::filesystem::exists(out_path))
-            {
-                std::error_code ec;
-                auto sz = std::filesystem::file_size(out_path, ec);
-                if (!ec && sz > 0)
-                    need_download = false;
-            }
-
-            if (need_download)
+            if (!file_exists_nonempty(out_path))
             {
                 std::cout << "Downloading " << fname << "...\n";
                 download_file(url, out_path);
@@ -548,9 +539,28 @@ int main()
             total_bytes += bytes;
         }
 
+        // ---- NEW: download connection_single_column.txt ----
+        {
+            const std::string conn = "connection_single_column.txt";
+            const std::string url = base_url + conn;
+            const std::filesystem::path out_path = out_dir / conn;
+
+            if (!file_exists_nonempty(out_path))
+            {
+                std::cout << "Downloading " << conn << "...\n";
+                download_file(url, out_path);
+            }
+            else
+            {
+                std::cout << "Skip download (exists): " << conn << "\n";
+            }
+
+            std::cout << "  " << conn << " | size=" << human_bytes(std::filesystem::file_size(out_path)) << "\n";
+        }
+
         curl_global_cleanup();
 
-        // Sort + unique per reading (unique by word; script is deterministic)
+        // Sort + unique per reading
         std::uint64_t total_before = 0;
         std::uint64_t total_after = 0;
 
@@ -587,7 +597,6 @@ int main()
         std::cout << "Total word-list items (before unique): " << total_before << "\n";
         std::cout << "Total word-list items (after  unique): " << total_after << "\n";
 
-        // Samples
         print_random_samples(sorted_keys, reading_to_words,
                              /*sample_count=*/10,
                              /*max_words_per_key=*/8);

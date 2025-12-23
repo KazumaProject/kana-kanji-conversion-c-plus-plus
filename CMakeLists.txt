@@ -12,12 +12,10 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Default build type
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-# Nice warnings (GCC/Clang)
 if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
@@ -28,11 +26,10 @@ find_package(CURL REQUIRED)
 add_executable(mozc_dic_fetch
   src/dictionary_builder/mozc_fetch/mozc_fetch.cpp
 )
-
 target_link_libraries(mozc_dic_fetch PRIVATE CURL::libcurl)
 
 # -----------------------------
-# Dictionary builder
+# Dictionary builder libs
 # -----------------------------
 
 add_library(louds_utf16 STATIC
@@ -46,13 +43,29 @@ target_include_directories(louds_utf16 PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src/dictionary_builder/louds_builder
 )
 
+# ConnectionIdBuilder (new)
+add_library(connection_id STATIC
+  src/dictionary_builder/connection_id/connection_id_builder.cpp
+)
+target_include_directories(connection_id PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/dictionary_builder
+)
+
+# -----------------------------
+# Dictionary builder executable
+# -----------------------------
+
 add_executable(dictionary_builder
   src/dictionary_builder/dictionary_builder.cpp
 )
-target_link_libraries(dictionary_builder PRIVATE louds_utf16)
+
+target_link_libraries(dictionary_builder PRIVATE
+  louds_utf16
+  connection_id
+)
 
 # -----------------------------
-# CLI 
+# CLI
 # -----------------------------
 
 add_executable(cps_cli cli/louds/cps_cli.cpp)
