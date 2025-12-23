@@ -32,13 +32,28 @@ add_executable(mozc_dic_fetch
 target_link_libraries(mozc_dic_fetch PRIVATE CURL::libcurl)
 
 # -----------------------------
-# LOUDS builder
+# Dictionary builder
 # -----------------------------
 
-# prefix (UTF-16)
-src/dictionary_builder/louds_builder/prefix_tree/prefix_tree_utf16.cpp
+add_library(louds_utf16 STATIC
+  src/dictionary_builder/louds_builder/prefix_tree/prefix_tree_utf16.cpp
+  src/dictionary_builder/louds_builder/louds/louds_utf16_writer.cpp
+  src/dictionary_builder/louds_builder/louds/louds_converter_utf16.cpp
+  src/dictionary_builder/louds_builder/louds/louds_utf16_reader.cpp
+)
 
-# louds (UTF-16)
-src/dictionary_builder/louds_builder/louds/louds_utf16_writer.cpp
-src/dictionary_builder/louds_builder/louds/louds_converter_utf16.cpp
-src/dictionary_builder/louds_builder/louds/louds_utf16_reader.cpp
+target_include_directories(louds_utf16 PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/dictionary_builder/louds_builder
+)
+
+add_executable(dictionary_builder
+  src/dictionary_builder/dictionary_builder.cpp
+)
+target_link_libraries(dictionary_builder PRIVATE louds_utf16)
+
+# -----------------------------
+# CLI 
+# -----------------------------
+
+add_executable(cps_cli cli/louds/cps_cli.cpp)
+target_link_libraries(cps_cli PRIVATE louds_utf16)
