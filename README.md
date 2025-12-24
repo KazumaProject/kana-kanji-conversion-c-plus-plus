@@ -13,8 +13,8 @@
   - 読み（yomi）→ termId の LOUDS（`yomi_termid.louds`）
   - 表記（tango）の LOUDS（`tango.louds`）
   - termId → トークン列（`token_array.bin`）
-  - 接続コスト（`connection_single_column.bin`）
   - POS テーブル（`pos_table.bin`）
+  - 接続コスト（`connection_single_column.bin`）
 - かな→候補のデバッグ出力（`prefix_predict_cli`）
 - LOUDS への common prefix search / termId 取得のデバッグ（`cps_cli`, `termid_cli`）
 
@@ -25,9 +25,8 @@
 - `yomi_termid.louds`
 - `tango.louds`
 - `token_array.bin`
+- `pos_table.bin`
 - `connection_single_column.bin`
-
-（補助：`pos_table.bin` は POS テーブルで、辞書構築やデバッグで参照します）
 
 ---
 
@@ -78,7 +77,7 @@ cmake --build build -j
 ```
 
 メモ：
-- `--out`（読み LOUDS）は、将来の拡張や検証用途です（変換本体の必須要件は上記 4 ファイルです）。
+- `--out`（読み LOUDS）は、将来の拡張や検証用途です（変換本体の必須要件は上記 5 ファイルです）。
 - `connection_single_column.txt` の 1 行目をスキップする実装になっている場合があります（Mozc の形式に合わせた処理）。
 
 ### 3) 変換用アーティファクト生成（yomi/tango/token/POS）
@@ -135,7 +134,7 @@ echo "きょうはいいてんきです" | ./build/prefix_predict_cli   --yomi_t
 ## ライセンス
 
 - **プログラム本体**：MIT License（`LICENSE`）
-- **辞書データ**：Mozc のライセンス（BSD 3-Clause 相当、`LICENSE-MOZC` を参照）  
+- **辞書データ**：Mozc のライセンス（`LICENSE-MOZC`）  
   - 本リポジトリは Mozc の辞書データそのものを同梱せず、`mozc_dic_fetch` により取得します。
 
 ---
@@ -153,8 +152,8 @@ Internally, it uses UTF-16 based LOUDS (Level-Order Unary Degree Sequence) to co
   - Yomi (reading) → termId LOUDS (`yomi_termid.louds`)
   - Tango (surface form) LOUDS (`tango.louds`)
   - termId → token postings (`token_array.bin`)
-  - Connection costs (`connection_single_column.bin`)
   - POS table (`pos_table.bin`)
+  - Connection costs (`connection_single_column.bin`)
 - Debug conversion output (`prefix_predict_cli`)
 - Debug LOUDS CPS / termId operations (`cps_cli`, `termid_cli`)
 
@@ -163,9 +162,8 @@ Internally, it uses UTF-16 based LOUDS (Level-Order Unary Degree Sequence) to co
 - `yomi_termid.louds`
 - `tango.louds`
 - `token_array.bin`
+- `pos_table.bin`
 - `connection_single_column.bin`
-
-(`pos_table.bin` is helpful for debugging/verification.)
 
 ---
 
@@ -253,5 +251,5 @@ Notes:
 ## License
 
 - **Code**: MIT License (`LICENSE`)
-- **Dictionary data**: Mozc license (BSD 3-Clause; see `LICENSE-MOZC`)  
+- **Dictionary data**: Mozc license (`LICENSE-MOZC`)  
   - This repository does not bundle Mozc dictionary data; it is fetched via `mozc_dic_fetch`.
