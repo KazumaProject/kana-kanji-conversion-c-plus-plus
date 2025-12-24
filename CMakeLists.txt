@@ -45,6 +45,7 @@ add_library(louds_utf16 STATIC
   src/dictionary_builder/louds_builder/louds/louds_utf16_reader.cpp
   src/dictionary_builder/louds_builder/louds_with_term_id/louds_with_term_id_utf16.cpp
   src/dictionary_builder/louds_builder/louds_with_term_id/louds_converter_with_term_id_utf16.cpp
+  src/dictionary_builder/louds_builder/louds_with_term_id/louds_with_term_id_reader_utf16.cpp
 )
 
 target_include_directories(louds_utf16 PUBLIC
@@ -101,3 +102,9 @@ target_link_libraries(tries_token_builder PRIVATE
 
 add_executable(cps_cli cli/louds/cps_cli.cpp)
 target_link_libraries(cps_cli PRIVATE louds_utf16)
+
+add_executable(termid_cli cli/louds/termid_cli.cpp)
+target_link_libraries(termid_cli PRIVATE louds_utf16)
+
+add_executable(prefix_predict_cli cli/kana_kanji/prefix_predict_cli.cpp)
+target_link_libraries(prefix_predict_cli PRIVATE token_array)

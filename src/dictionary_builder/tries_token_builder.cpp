@@ -8,29 +8,35 @@
 //  - Build POS table (leftId/rightId pairs) and persist
 //
 // Build (Ubuntu):
-//   g++ -std=c++20 -O2 \
+//   g++ -std=c++20 -O2 -Isrc/dictionary_builder -Isrc/dictionary_builder/louds_builder \
 //     src/dictionary_builder/tries_token_builder.cpp \
 //     src/dictionary_builder/louds_builder/prefix_tree/prefix_tree_utf16.cpp \
-//     src/dictionary_builder/louds_builder/prefix_tree/prefix_tree_with_term_id_utf16.cpp \
+//     src/dictionary_builder/louds_builder/prefix_tree_with_term_id/prefix_tree_with_term_id_utf16.cpp \
 //     src/dictionary_builder/louds_builder/louds/louds_converter_utf16.cpp \
 //     src/dictionary_builder/louds_builder/louds/louds_utf16_writer.cpp \
 //     src/dictionary_builder/louds_builder/louds/louds_utf16_reader.cpp \
-//     src/dictionary_builder/louds_builder/louds/louds_with_term_id_utf16.cpp \
-//     src/dictionary_builder/louds_builder/louds/louds_converter_with_term_id_utf16.cpp \
+//     src/dictionary_builder/louds_builder/louds_with_term_id/louds_with_term_id_utf16.cpp \
+//     src/dictionary_builder/louds_builder/louds_with_term_id/louds_converter_with_term_id_utf16.cpp \
 //     src/dictionary_builder/token_array/token_array.cpp \
 //     -o buildTriesToken
 //
 // Run:
 //   ./buildTriesToken --in_dir src/dictionary_builder/mozc_fetch --out_dir build
+//   ./buildTriesToken --in_dir ... --out_dir ... --quiet
+//
+// Dump registrations (VERY LARGE):
+//   ./buildTriesToken --in_dir ... --out_dir ... --dump_all
+//   ./buildTriesToken --in_dir ... --out_dir ... --dump_yomi えびふらい
 
 #include <algorithm>
 #include <charconv>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <limits>
-#include <map>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -134,16 +140,123 @@ static bool utf8_to_u16(const std::string &s, std::u16string &out)
     return true;
 }
 
+static std::string u16_to_utf8(const std::u16string &s)
+{
+    std::string out;
+    out.reserve(s.size() * 3);
+
+    for (size_t i = 0; i < s.size(); ++i)
+    {
+        uint32_t cp = static_cast<uint16_t>(s[i]);
+
+        // surrogate pair
+        if (cp >= 0xD800 && cp <= 0xDBFF)
+        {
+            if (i + 1 >= s.size())
+                break;
+            const uint32_t lo = static_cast<uint16_t>(s[i + 1]);
+            if (lo < 0xDC00 || lo > 0xDFFF)
+                break;
+            cp = 0x10000 + (((cp - 0xD800) << 10) | (lo - 0xDC00));
+            ++i;
+        }
+        else if (cp >= 0xDC00 && cp <= 0xDFFF)
+        {
+            // stray low surrogate
+            continue;
+        }
+
+        if (cp <= 0x7F)
+        {
+            out.push_back(static_cast<char>(cp));
+        }
+        else if (cp <= 0x7FF)
+        {
+            out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        }
+        else if (cp <= 0xFFFF)
+        {
+            out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        }
+        else
+        {
+            out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        }
+    }
+
+    return out;
+}
+
+static bool is_hiragana_only_u16(const std::u16string &s);
+static bool is_katakana_only_u16(const std::u16string &s);
+static bool is_hira_or_kata_only_u16(const std::u16string &s);
+
+static const char *token_kind_label(const std::u16string &yomi, const std::u16string &tango)
+{
+    // Mirrors the TokenArray nodeIndex decision used later:
+    //   - hiragana-only (or tango==yomi) => HIRAGANA_SENTINEL
+    //   - katakana-only => KATAKANA_SENTINEL
+    //   - otherwise => tango LOUDS nodeIndex
+    if (tango == yomi || is_hiragana_only_u16(tango))
+        return "HIRAGANA_SENTINEL";
+    if (is_katakana_only_u16(tango))
+        return "KATAKANA_SENTINEL";
+    return "TANGO_LOUDS_NODE";
+}
+
+static void dump_all_registrations(const std::vector<std::u16string> &keys,
+                                   const std::unordered_map<std::u16string, std::vector<DicRow>> &grouped,
+                                   const std::u16string *onlyYomiOrNull)
+{
+    // WARNING: This can be extremely large (millions of lines) when dumping the full Mozc dictionary.
+    // Use --dump_yomi <yomi> to narrow.
+    for (size_t termId = 0; termId < keys.size(); ++termId)
+    {
+        const auto &yomi = keys[termId];
+        if (onlyYomiOrNull && yomi != *onlyYomiOrNull)
+            continue;
+
+        auto it = grouped.find(yomi);
+        if (it == grouped.end())
+            continue;
+
+        const auto &list = it->second;
+        std::cout << "[yomi] termId=" << termId
+                  << " yomi=" << u16_to_utf8(yomi)
+                  << " tokens=" << list.size()
+                  << "\n";
+
+        for (const auto &row : list)
+        {
+            const bool isKanaOnly = is_hira_or_kata_only_u16(row.tango);
+            const bool isInsertedIntoTangoLOUDS = !isKanaOnly;
+
+            std::cout << "  - tango=" << u16_to_utf8(row.tango)
+                      << " cost=" << row.cost
+                      << " left_id=" << row.left_id
+                      << " right_id=" << row.right_id
+                      << " kind=" << token_kind_label(yomi, row.tango)
+                      << " insert_tango_louds=" << (isInsertedIntoTangoLOUDS ? "1" : "0")
+                      << "\n";
+        }
+    }
+}
+
 static bool is_hiragana_only_u16(const std::u16string &s)
 {
     if (s.empty())
         return false;
     for (char16_t ch : s)
     {
-        // Hiragana block: U+3040..U+309F (including small kana, dakuten marks)
+        // Hiragana block: U+3040..U+309F
         if (ch < 0x3040 || ch > 0x309F)
             return false;
-        // Exclude iteration marks and punctuation if you need stricter behavior.
     }
     return true;
 }
@@ -269,6 +382,10 @@ int main(int argc, char **argv)
     {
         fs::path in_dir = "src/dictionary_builder/mozc_fetch";
         fs::path out_dir = "build";
+        bool dump_all = false;
+        bool dump_yomi = false;
+        std::u16string dump_yomi_u16;
+
         for (int i = 1; i < argc; ++i)
         {
             std::string a = argv[i];
@@ -276,7 +393,17 @@ int main(int argc, char **argv)
                 in_dir = argv[++i];
             else if (a == "--out_dir" && i + 1 < argc)
                 out_dir = argv[++i];
+            else if (a == "--dump_all")
+                dump_all = true;
+            else if (a == "--dump_yomi" && i + 1 < argc)
+            {
+                dump_yomi = true;
+                const std::string y = argv[++i];
+                if (!utf8_to_u16(y, dump_yomi_u16))
+                    throw std::runtime_error("Invalid UTF-8 for --dump_yomi");
+            }
         }
+
         fs::create_directories(out_dir);
 
         // 1) Load dictionaries and group by yomi
@@ -306,10 +433,17 @@ int main(int argc, char **argv)
                   {
                       if (a.size() != b.size())
                           return a.size() < b.size();
-                      return a < b;
-                  });
+                      return a < b; });
 
         std::cerr << "Distinct yomi keys: " << keys.size() << "\n";
+
+        if (dump_all || dump_yomi)
+        {
+            const std::u16string *only = dump_yomi ? &dump_yomi_u16 : nullptr;
+            dump_all_registrations(keys, grouped, only);
+            // If the user only wants the dump, exiting early avoids doing heavy LOUDS/token builds.
+            return 0;
+        }
 
         // 3) Build POS table (match Kotlin: reverse encounter order)
         std::unordered_map<uint32_t, int> pairCounter;
@@ -359,7 +493,8 @@ int main(int argc, char **argv)
             posIndexByPair[pk] = static_cast<uint16_t>(i);
         }
 
-        write_pos_table((out_dir / "pos_table.bin").string(), leftIds, rightIds);
+        const fs::path posPath = out_dir / "pos_table.bin";
+        write_pos_table(posPath.string(), leftIds, rightIds);
         std::cerr << "POS pairs: " << pairs.size() << "\n";
 
         // 4) Build tries
@@ -385,12 +520,13 @@ int main(int argc, char **argv)
         const auto yomiLOUDS = ConverterWithTermIdUtf16().convert(yomiTree.root());
         const auto tangoLOUDS = ConverterUtf16().convert(tangoTree.getRoot());
 
-        yomiLOUDS.saveToFile((out_dir / "yomi_termid.louds").string());
-        tangoLOUDS.saveToFile((out_dir / "tango.louds").string());
-        std::cerr << "Wrote LOUDS files." << "\n";
+        const fs::path yomiPath = out_dir / "yomi_termid.louds";
+        const fs::path tangoPath = out_dir / "tango.louds";
+        yomiLOUDS.saveToFile(yomiPath.string());
+        tangoLOUDS.saveToFile(tangoPath.string());
 
         // 6) Reload tango LOUDS for nodeIndex lookup
-        const auto tangoReader = LOUDSReaderUtf16::loadFromFile((out_dir / "tango.louds").string());
+        const auto tangoReader = LOUDSReaderUtf16::loadFromFile(tangoPath.string());
 
         // 7) Build TokenArray
         TokenArray tokens;
@@ -434,8 +570,8 @@ int main(int argc, char **argv)
             }
         }
 
-        tokens.saveToFile((out_dir / "token_array.bin").string());
-        std::cerr << "Wrote token_array.bin" << "\n";
+        const fs::path tokenPath = out_dir / "token_array.bin";
+        tokens.saveToFile(tokenPath.string());
 
         return 0;
     }
