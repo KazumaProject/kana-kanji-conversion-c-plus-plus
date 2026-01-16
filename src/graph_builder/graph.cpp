@@ -230,31 +230,6 @@ namespace kk
                 }
             }
 
-            // (B) predictiveSearch（commonPrefixSearch + predictiveSearch のモードで追加）
-            if (mode == YomiSearchMode::CommonPrefixPlusPredictive || mode == YomiSearchMode::All)
-            {
-                // predictiveSearch は「prefix から先を列挙」なので、
-                // subStr の先頭 K 文字を prefix として列挙し、
-                // その結果から subStr の prefix になっているものだけ採用する。
-                const size_t k = std::min(static_cast<size_t>(predictivePrefixLen), subStr.size());
-                if (k > 0)
-                {
-                    const std::u16string predPrefix = subStr.substr(0, k);
-                    const auto preds = yomiCps.predictiveSearch(predPrefix);
-                    if (!preds.empty())
-                        foundInAnyDictionary = true;
-
-                    for (const auto &y : preds)
-                    {
-                        // 入力 subStr と整合する（prefix として一致し、かつ長さが残り以内）ものだけ採用
-                        if (!is_prefix_of(subStr, y))
-                            continue;
-                        if (seen.insert(y).second)
-                            yomiHits.push_back(y);
-                    }
-                }
-            }
-
             // (C) commonPrefixSearchWithOmission（濁点/半濁点/小文字など許容）
             if (mode == YomiSearchMode::CommonPrefixPlusOmission || mode == YomiSearchMode::All)
             {

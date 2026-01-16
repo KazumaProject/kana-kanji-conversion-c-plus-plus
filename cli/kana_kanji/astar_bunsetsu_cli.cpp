@@ -4,6 +4,9 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <stdexcept>
+#include <unordered_map>
+#include <algorithm>
 
 #include "connection_id/connection_id_builder.hpp"
 #include "graph_builder/graph.hpp"
@@ -200,22 +203,192 @@ static void usage(const char *argv0)
         << "  " << argv0
         << " --yomi_termid <yomi_termid.louds> --tango <tango.louds> --tokens <token_array.bin>\n"
         << "      --pos_table <pos_table.bin> --conn <connection_single_column.bin>\n"
-        << "      --q <utf8> [--n N] [--beam W] [--show_bunsetsu]\n"
-        << "      [--yomi_mode cps|cps_pred|cps_omit|all] [--pred_k K]\n"
+        << "      --q <utf8> [--n N] [--beam W] [--show_bunsetsu] [--show_prediction]\n"
+        << "      [--yomi_mode cps|cps_pred|cps_omit|all] [--pred_k K] [--pred_n M]\n"
         << "  " << argv0
         << " --yomi_termid <yomi_termid.louds> --tango <tango.louds> --tokens <token_array.bin>\n"
         << "      --pos_table <pos_table.bin> --conn <connection_single_column.bin>\n"
-        << "      --stdin [--n N] [--beam W] [--show_bunsetsu]\n"
-        << "      [--yomi_mode cps|cps_pred|cps_omit|all] [--pred_k K]\n"
+        << "      --stdin [--n N] [--beam W] [--show_bunsetsu] [--show_prediction]\n"
+        << "      [--yomi_mode cps|cps_pred|cps_omit|all] [--pred_k K] [--pred_n M]\n"
         << "\n"
         << "Notes:\n"
         << "  --yomi_mode:\n"
-        << "    cps      : yomiCps.commonPrefixSearch only\n"
-        << "    cps_pred : commonPrefixSearch + predictiveSearch(prefix length = --pred_k)\n"
-        << "    cps_omit : commonPrefixSearch + commonPrefixSearchWithOmission\n"
-        << "    all      : all three\n"
+        << "    cps      : yomiCps.commonPrefixSearch only (graph)\n"
+        << "    cps_pred : graph still uses CPS only; predictive is available for --show_prediction\n"
+        << "    cps_omit : commonPrefixSearch + commonPrefixSearchWithOmission (graph)\n"
+        << "    all      : cps + omit (graph), predictive for --show_prediction\n"
         << "  --pred_k:\n"
-        << "    predictiveSearch uses prefix = subStr.substr(0, K), then filters to yomi that are prefixes of subStr.\n";
+        << "    --show_prediction uses prefix = q.substr(0, K), then keeps yomi that start with q.\n"
+        << "  --pred_n:\n"
+        << "    Max rows to print for prediction_candidates (default 50). Use 0 to suppress output.\n"
+        << "  --show_prediction:\n"
+        << "    Prints prediction candidates from LOUDSReaderUtf16::predictiveSearch without modifying the graph.\n";
+}
+
+// -----------------------------
+// Hiragana -> Katakana (same as graph.cpp logic)
+// -----------------------------
+static std::u16string hira_to_kata(const std::u16string &hira)
+{
+    std::u16string out;
+    out.reserve(hira.size());
+    for (char16_t ch : hira)
+    {
+        if ((ch >= 0x3041 && ch <= 0x3096) || (ch >= 0x309D && ch <= 0x309F))
+            out.push_back(static_cast<char16_t>(ch + 0x0060));
+        else
+            out.push_back(ch);
+    }
+    return out;
+}
+
+static bool starts_with_u16(const std::u16string &s, const std::u16string &prefix)
+{
+    if (prefix.size() > s.size())
+        return false;
+    return s.compare(0, prefix.size(), prefix) == 0;
+}
+
+// -----------------------------
+// u16 hash for unordered_map
+// -----------------------------
+struct U16Hash
+{
+    size_t operator()(const std::u16string &s) const noexcept
+    {
+        uint64_t h = 1469598103934665603ULL; // FNV-1a 64-bit
+        for (char16_t c : s)
+        {
+            h ^= static_cast<uint16_t>(c);
+            h *= 1099511628211ULL;
+        }
+        return static_cast<size_t>(h);
+    }
+};
+
+struct PredRow
+{
+    std::u16string surface;
+    std::u16string yomi;
+    int score = 0;
+    int16_t l = 0;
+    int16_t r = 0;
+};
+
+// -----------------------------
+// Build & print prediction candidates (NO graph modification)
+// -----------------------------
+static void print_prediction(
+    const LOUDSReaderUtf16 &yomiCps,
+    const LOUDSWithTermIdReaderUtf16 &yomiTerm,
+    const TokenArray &tokens,
+    const kk::PosTable &pos,
+    const LOUDSReaderUtf16 &tango,
+    const std::u16string &q16,
+    int predK,
+    int limitRows = 50)
+{
+    if (q16.empty())
+        return;
+
+    if (limitRows <= 0)
+        return;
+
+    if (predK < 1)
+        predK = 1;
+
+    const size_t k = std::min(static_cast<size_t>(predK), q16.size());
+    const std::u16string prefix = q16.substr(0, k);
+
+    // 1) get yomi candidates from predictiveSearch(prefix)
+    const auto preds = yomiCps.predictiveSearch(prefix);
+
+    // 2) Keep only yomi that start with q (so "あいあ" -> "あいあんと" remains)
+    // 3) Expand into surface forms via termId -> tokens -> tango
+    std::unordered_map<std::u16string, PredRow, U16Hash> bestBySurface;
+    bestBySurface.reserve(1024);
+
+    for (const auto &yomi : preds)
+    {
+        if (!starts_with_u16(yomi, q16))
+            continue;
+
+        const int32_t termId = yomiTerm.getTermId(yomi);
+        if (termId < 0)
+            continue;
+
+        const auto listToken = tokens.getTokensForTermId(termId);
+
+        for (const auto &t : listToken)
+        {
+            std::u16string surface;
+
+            if (t.nodeIndex == TokenArray::HIRAGANA_SENTINEL)
+            {
+                surface = yomi;
+            }
+            else if (t.nodeIndex == TokenArray::KATAKANA_SENTINEL)
+            {
+                surface = hira_to_kata(yomi);
+            }
+            else
+            {
+                surface = tango.getLetter(t.nodeIndex);
+            }
+
+            const auto [l, r] = pos.getLR(t.posIndex);
+            const int score = static_cast<int>(t.wordCost);
+
+            auto it = bestBySurface.find(surface);
+            if (it == bestBySurface.end() || score < it->second.score)
+            {
+                PredRow row;
+                row.surface = surface;
+                row.yomi = yomi;
+                row.score = score;
+                row.l = l;
+                row.r = r;
+                bestBySurface[surface] = std::move(row);
+            }
+        }
+    }
+
+    std::vector<PredRow> rows;
+    rows.reserve(bestBySurface.size());
+    for (auto &kv : bestBySurface)
+        rows.push_back(std::move(kv.second));
+
+    std::sort(rows.begin(), rows.end(), [](const PredRow &a, const PredRow &b)
+              {
+                  if (a.score != b.score)
+                      return a.score < b.score;
+                  // stable-ish tie-break
+                  if (a.surface != b.surface)
+                      return a.surface < b.surface;
+                  return a.yomi < b.yomi; });
+
+    if (rows.empty())
+    {
+        std::cout << "prediction_candidates: (none)\n";
+        return;
+    }
+
+    std::cout << "prediction_candidates:\n";
+    const int n = std::min<int>(limitRows, static_cast<int>(rows.size()));
+    for (int i = 0; i < n; ++i)
+    {
+        std::string s8, y8;
+        if (!u16_to_utf8(rows[i].surface, s8))
+            s8 = "<BAD_U16>";
+        if (!u16_to_utf8(rows[i].yomi, y8))
+            y8 = "<BAD_U16>";
+
+        std::cout << (i + 1) << "\t" << s8
+                  << "\tyomi=" << y8
+                  << "\tscore=" << rows[i].score
+                  << "\tL=" << rows[i].l << "\tR=" << rows[i].r
+                  << "\n";
+    }
 }
 
 static void run_one(const LOUDSReaderUtf16 &yomiCps,
@@ -228,8 +401,10 @@ static void run_one(const LOUDSReaderUtf16 &yomiCps,
                     int nBest,
                     int beamWidth,
                     bool showBunsetsu,
+                    bool showPrediction,
                     kk::YomiSearchMode yomiMode,
-                    int predK)
+                    int predK,
+                    int predN)
 {
     std::u16string q16;
     if (!utf8_to_u16(q_utf8, q16))
@@ -277,6 +452,12 @@ static void run_one(const LOUDSReaderUtf16 &yomiCps,
 
         std::cout << "\n";
     }
+
+    if (showPrediction)
+    {
+        // Prediction output is independent from the graph.
+        print_prediction(yomiCps, yomiTerm, tokens, pos, tango, q16, predK, predN);
+    }
 }
 
 int main(int argc, char **argv)
@@ -295,10 +476,13 @@ int main(int argc, char **argv)
         int nBest = 10;
         int beamWidth = 20;
         bool showBunsetsu = false;
+        bool showPrediction = false;
 
-        // Added
         std::string yomi_mode_str = "cps";
         int predK = 1;
+
+        // Added: prediction output rows
+        int predN = 50;
 
         for (int i = 1; i < argc; ++i)
         {
@@ -358,8 +542,12 @@ int main(int argc, char **argv)
                 showBunsetsu = true;
                 continue;
             }
+            if (a == "--show_prediction")
+            {
+                showPrediction = true;
+                continue;
+            }
 
-            // Added
             if (a == "--yomi_mode" && i + 1 < argc)
             {
                 yomi_mode_str = argv[++i];
@@ -368,6 +556,13 @@ int main(int argc, char **argv)
             if (a == "--pred_k" && i + 1 < argc)
             {
                 predK = std::stoi(argv[++i]);
+                continue;
+            }
+
+            // Added: --pred_n
+            if (a == "--pred_n" && i + 1 < argc)
+            {
+                predN = std::stoi(argv[++i]);
                 continue;
             }
 
@@ -384,7 +579,6 @@ int main(int argc, char **argv)
 
         const kk::YomiSearchMode yomiMode = parse_yomi_mode(yomi_mode_str);
 
-        // yomi_termid.louds: load twice (plain LOUDS for CPS, and WithTermId for getTermId)
         const auto yomiCps = LOUDSReaderUtf16::loadFromFile(yomi_termid_path);
         const auto yomiTrie = LOUDSWithTermIdUtf16::loadFromFile(yomi_termid_path);
         const LOUDSWithTermIdReaderUtf16 yomiTerm(yomiTrie);
@@ -393,13 +587,15 @@ int main(int argc, char **argv)
         const auto tokens = TokenArray::loadFromFile(tokens_path);
         const auto pos = kk::PosTable::loadFromFile(pos_path);
 
-        // connection matrix (Big Endian short array)
         const auto connVec = ConnectionIdBuilder::readShortArrayFromBytesBE(conn_path);
         const kk::ConnectionMatrix conn(std::vector<int16_t>(connVec.begin(), connVec.end()));
 
         if (!stdin_mode)
         {
-            run_one(yomiCps, yomiTerm, tokens, pos, tango, conn, q, nBest, beamWidth, showBunsetsu, yomiMode, predK);
+            run_one(
+                yomiCps, yomiTerm, tokens, pos, tango, conn,
+                q, nBest, beamWidth, showBunsetsu, showPrediction,
+                yomiMode, predK, predN);
             return 0;
         }
 
@@ -411,7 +607,10 @@ int main(int argc, char **argv)
             if (line.empty())
                 continue;
 
-            run_one(yomiCps, yomiTerm, tokens, pos, tango, conn, line, nBest, beamWidth, showBunsetsu, yomiMode, predK);
+            run_one(
+                yomiCps, yomiTerm, tokens, pos, tango, conn,
+                line, nBest, beamWidth, showBunsetsu, showPrediction,
+                yomiMode, predK, predN);
         }
 
         return 0;
