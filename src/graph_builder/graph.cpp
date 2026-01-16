@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <fstream>
 #include <stdexcept>
+#include <unordered_set>
 
 namespace kk
 {
@@ -158,6 +159,30 @@ namespace kk
     }
 
     // -----------------------------
+    // u16 hash for unordered_set
+    // -----------------------------
+    struct U16Hash
+    {
+        size_t operator()(const std::u16string &s) const noexcept
+        {
+            uint64_t h = 1469598103934665603ULL; // FNV-1a 64-bit
+            for (char16_t c : s)
+            {
+                h ^= static_cast<uint16_t>(c);
+                h *= 1099511628211ULL;
+            }
+            return static_cast<size_t>(h);
+        }
+    };
+
+    static bool is_prefix_of(const std::u16string &full, const std::u16string &maybePrefix)
+    {
+        if (maybePrefix.size() > full.size())
+            return false;
+        return full.compare(0, maybePrefix.size(), maybePrefix) == 0;
+    }
+
+    // -----------------------------
     // GraphBuilder::constructGraph
     // -----------------------------
     Graph GraphBuilder::constructGraph(
@@ -166,7 +191,9 @@ namespace kk
         const LOUDSWithTermIdReaderUtf16 &yomiTerm,
         const TokenArray &tokens,
         const PosTable &pos,
-        const LOUDSReaderUtf16 &tango)
+        const LOUDSReaderUtf16 &tango,
+        YomiSearchMode mode,
+        int predictivePrefixLen)
     {
         const int n = static_cast<int>(str.size());
 
@@ -176,16 +203,78 @@ namespace kk
         graph[0].push_back(make_bos());
         graph[static_cast<size_t>(n) + 1].push_back(make_eos(n + 1));
 
+        if (predictivePrefixLen < 1)
+            predictivePrefixLen = 1;
+
         for (int i = 0; i < n; ++i)
         {
             const std::u16string subStr = str.substr(static_cast<size_t>(i));
             bool foundInAnyDictionary = false;
 
-            // System dictionary CPS
-            const auto yomiHits = yomiCps.commonPrefixSearch(subStr);
-            if (!yomiHits.empty())
-                foundInAnyDictionary = true;
+            // 集約（重複排除）
+            std::vector<std::u16string> yomiHits;
+            yomiHits.reserve(256);
+            std::unordered_set<std::u16string, U16Hash> seen;
+            seen.reserve(256);
 
+            // (A) commonPrefixSearch は常に含める（要求仕様に合わせる）
+            {
+                const auto cps = yomiCps.commonPrefixSearch(subStr);
+                if (!cps.empty())
+                    foundInAnyDictionary = true;
+
+                for (const auto &y : cps)
+                {
+                    if (seen.insert(y).second)
+                        yomiHits.push_back(y);
+                }
+            }
+
+            // (B) predictiveSearch（commonPrefixSearch + predictiveSearch のモードで追加）
+            if (mode == YomiSearchMode::CommonPrefixPlusPredictive || mode == YomiSearchMode::All)
+            {
+                // predictiveSearch は「prefix から先を列挙」なので、
+                // subStr の先頭 K 文字を prefix として列挙し、
+                // その結果から subStr の prefix になっているものだけ採用する。
+                const size_t k = std::min(static_cast<size_t>(predictivePrefixLen), subStr.size());
+                if (k > 0)
+                {
+                    const std::u16string predPrefix = subStr.substr(0, k);
+                    const auto preds = yomiCps.predictiveSearch(predPrefix);
+                    if (!preds.empty())
+                        foundInAnyDictionary = true;
+
+                    for (const auto &y : preds)
+                    {
+                        // 入力 subStr と整合する（prefix として一致し、かつ長さが残り以内）ものだけ採用
+                        if (!is_prefix_of(subStr, y))
+                            continue;
+                        if (seen.insert(y).second)
+                            yomiHits.push_back(y);
+                    }
+                }
+            }
+
+            // (C) commonPrefixSearchWithOmission（濁点/半濁点/小文字など許容）
+            if (mode == YomiSearchMode::CommonPrefixPlusOmission || mode == YomiSearchMode::All)
+            {
+                const auto omits = yomiCps.commonPrefixSearchWithOmission(subStr);
+                if (!omits.empty())
+                    foundInAnyDictionary = true;
+
+                for (const auto &r : omits)
+                {
+                    // omission なので subStr と文字が一致しない可能性はあるが、
+                    // 消費長は r.yomi.size() として扱う（探索時に1文字ずつ進んでいるため）。
+                    // ただし残り長を超えるものは捨てる。
+                    if (r.yomi.size() > subStr.size())
+                        continue;
+                    if (seen.insert(r.yomi).second)
+                        yomiHits.push_back(r.yomi);
+                }
+            }
+
+            // --- add tokens for each yomi ---
             for (const auto &yomiStr : yomiHits)
             {
                 const int32_t termId = yomiTerm.getTermId(yomiStr);
@@ -218,8 +307,8 @@ namespace kk
                         /*l=*/l,
                         /*r=*/r,
                         /*score=*/cost,
-                        /*f=*/cost, // initial f=word cost (forwardDp will overwrite with best path cost)
-                        /*g=*/cost, // initial g is not used directly; backward search keeps g in state
+                        /*f=*/cost,
+                        /*g=*/cost,
                         /*tango=*/std::move(surface),
                         /*len=*/static_cast<int16_t>(yomiStr.size()),
                         /*sPos=*/i);

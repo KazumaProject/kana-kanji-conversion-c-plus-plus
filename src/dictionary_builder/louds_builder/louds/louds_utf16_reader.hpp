@@ -3,9 +3,6 @@
 #include <cstddef>
 #include <vector>
 #include <string>
-#include <fstream>
-#include <stdexcept>
-#include <algorithm>
 
 #include "common/bit_vector_utf16.hpp"
 #include "common/succinct_bit_vector_utf16.hpp"
@@ -13,11 +10,24 @@
 class LOUDSReaderUtf16
 {
 public:
+    struct OmissionSearchResult
+    {
+        std::u16string yomi;
+        bool omissionOccurred = false;
+    };
+
+public:
     LOUDSReaderUtf16(const BitVector &lbs,
                      const BitVector &isLeaf,
                      std::vector<char16_t> labels);
 
     std::vector<std::u16string> commonPrefixSearch(const std::u16string &str) const;
+
+    // Added
+    std::vector<std::u16string> predictiveSearch(const std::u16string &prefix) const;
+
+    // Added
+    std::vector<OmissionSearchResult> commonPrefixSearchWithOmission(const std::u16string &str) const;
 
     // ルートから nodeIndex までのラベルを復元
     std::u16string getLetter(int nodeIndex) const;
@@ -40,6 +50,19 @@ private:
     int traverse(int pos, char16_t c) const;
 
     int search(int index, const std::u16string &chars, size_t wordOffset) const;
+
+    // predictiveSearch helper
+    void collectWords(int pos, std::u16string &prefix, std::vector<std::u16string> &out) const;
+
+    // omission helpers
+    static std::vector<char16_t> getCharVariations(char16_t ch);
+
+    void searchRecursiveWithOmission(const std::u16string &originalStr,
+                                     size_t strIndex,
+                                     int currentNodeIndex,
+                                     std::u16string &currentYomi,
+                                     bool omissionOccurred,
+                                     std::vector<OmissionSearchResult> &out) const;
 
     static void read_u64(std::istream &is, uint64_t &v);
     static void read_u16(std::istream &is, uint16_t &v);

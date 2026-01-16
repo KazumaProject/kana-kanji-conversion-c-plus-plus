@@ -56,6 +56,15 @@ namespace kk
     // graph[endIndex] = list of nodes whose end position is endIndex
     using Graph = std::vector<std::vector<Node>>;
 
+    // yomiCps の探索モード
+    enum class YomiSearchMode
+    {
+        CommonPrefixOnly = 0,           // commonPrefixSearch のみ
+        CommonPrefixPlusPredictive = 1, // commonPrefixSearch + predictiveSearch
+        CommonPrefixPlusOmission = 2,   // commonPrefixSearch + commonPrefixSearchWithOmission
+        All = 3                         // 3つすべて
+    };
+
     class GraphBuilder
     {
     public:
@@ -65,7 +74,9 @@ namespace kk
             const LOUDSWithTermIdReaderUtf16 &yomiTerm,
             const TokenArray &tokens,
             const PosTable &pos,
-            const LOUDSReaderUtf16 &tango);
+            const LOUDSReaderUtf16 &tango,
+            YomiSearchMode mode = YomiSearchMode::CommonPrefixOnly,
+            int predictivePrefixLen = 1);
     };
 
 } // namespace kk

@@ -1,5 +1,9 @@
 #include "louds/louds_utf16_reader.hpp"
 
+#include <fstream>
+#include <stdexcept>
+#include <algorithm>
+
 LOUDSReaderUtf16::LOUDSReaderUtf16(const BitVector &lbs,
                                    const BitVector &isLeaf,
                                    std::vector<char16_t> labels)
@@ -10,9 +14,16 @@ LOUDSReaderUtf16::LOUDSReaderUtf16(const BitVector &lbs,
 {
 }
 
+// ---- LOUDS navigation ----
+
 int LOUDSReaderUtf16::firstChild(int pos) const
 {
-    const int y = lbsSucc_.select0(lbsSucc_.rank1(pos)) + 1;
+    // Safety: select0 expects 1-indexed; if rank1(pos)==0 => invalid
+    const int r1 = lbsSucc_.rank1(pos);
+    if (r1 <= 0)
+        return -1;
+
+    const int y = lbsSucc_.select0(r1) + 1;
     if (y < 0)
         return -1;
     if (static_cast<size_t>(y) >= LBS_.size())
@@ -39,6 +50,8 @@ int LOUDSReaderUtf16::traverse(int pos, char16_t c) const
     }
     return -1;
 }
+
+// ---- Common prefix search (existing behavior) ----
 
 std::vector<std::u16string> LOUDSReaderUtf16::commonPrefixSearch(const std::u16string &str) const
 {
@@ -75,6 +88,231 @@ std::vector<std::u16string> LOUDSReaderUtf16::commonPrefixSearch(const std::u16s
     return result;
 }
 
+// ---- Predictive search ----
+
+void LOUDSReaderUtf16::collectWords(int pos, std::u16string &prefix, std::vector<std::u16string> &out) const
+{
+    if (pos < 0)
+        return;
+    if (static_cast<size_t>(pos) >= LBS_.size())
+        return;
+
+    if (static_cast<size_t>(pos) < isLeaf_.size() && isLeaf_.get(static_cast<size_t>(pos)))
+    {
+        out.push_back(prefix);
+    }
+
+    int childPos = firstChild(pos);
+    while (childPos >= 0 &&
+           static_cast<size_t>(childPos) < LBS_.size() &&
+           LBS_.get(static_cast<size_t>(childPos)))
+    {
+        const int labelIndex = lbsSucc_.rank1(childPos);
+        if (labelIndex < 0 || static_cast<size_t>(labelIndex) >= labels_.size())
+            break;
+
+        prefix.push_back(labels_[static_cast<size_t>(labelIndex)]);
+        collectWords(childPos, prefix, out);
+        prefix.pop_back();
+
+        childPos += 1;
+    }
+}
+
+std::vector<std::u16string> LOUDSReaderUtf16::predictiveSearch(const std::u16string &prefix) const
+{
+    std::vector<std::u16string> out;
+
+    int n = 0;
+    std::u16string built;
+    built.reserve(prefix.size());
+
+    for (char16_t c : prefix)
+    {
+        n = traverse(n, c);
+        if (n < 0)
+            return out;
+
+        const int idx = lbsSucc_.rank1(n);
+        if (idx < 0 || static_cast<size_t>(idx) >= labels_.size())
+            return out;
+
+        built.push_back(labels_[static_cast<size_t>(idx)]);
+    }
+
+    collectWords(n, built, out);
+    return out;
+}
+
+// ---- Omission-aware common prefix search ----
+
+std::vector<char16_t> LOUDSReaderUtf16::getCharVariations(char16_t ch)
+{
+    switch (ch)
+    {
+    case u'か':
+        return {u'か', u'が'};
+    case u'き':
+        return {u'き', u'ぎ'};
+    case u'く':
+        return {u'く', u'ぐ'};
+    case u'け':
+        return {u'け', u'げ'};
+    case u'こ':
+        return {u'こ', u'ご'};
+
+    case u'さ':
+        return {u'さ', u'ざ'};
+    case u'し':
+        return {u'し', u'じ'};
+    case u'す':
+        return {u'す', u'ず'};
+    case u'せ':
+        return {u'せ', u'ぜ'};
+    case u'そ':
+        return {u'そ', u'ぞ'};
+
+    case u'た':
+        return {u'た', u'だ'};
+    case u'ち':
+        return {u'ち', u'ぢ'};
+    case u'つ':
+        return {u'つ', u'づ', u'っ'};
+    case u'て':
+        return {u'て', u'で'};
+    case u'と':
+        return {u'と', u'ど'};
+
+    case u'は':
+        return {u'は', u'ば', u'ぱ'};
+    case u'ひ':
+        return {u'ひ', u'び', u'ぴ'};
+    case u'ふ':
+        return {u'ふ', u'ぶ', u'ぷ'};
+    case u'へ':
+        return {u'へ', u'べ', u'ぺ'};
+    case u'ほ':
+        return {u'ほ', u'ぼ', u'ぽ'};
+
+    case u'や':
+        return {u'や', u'ゃ'};
+    case u'ゆ':
+        return {u'ゆ', u'ゅ'};
+    case u'よ':
+        return {u'よ', u'ょ'};
+
+    case u'あ':
+        return {u'あ', u'ぁ'};
+    case u'い':
+        return {u'い', u'ぃ'};
+    case u'う':
+        return {u'う', u'ぅ'};
+    case u'え':
+        return {u'え', u'ぇ'};
+    case u'お':
+        return {u'お', u'ぉ'};
+
+    default:
+        return {ch};
+    }
+}
+
+void LOUDSReaderUtf16::searchRecursiveWithOmission(const std::u16string &originalStr,
+                                                   size_t strIndex,
+                                                   int currentNodeIndex,
+                                                   std::u16string &currentYomi,
+                                                   bool omissionOccurred,
+                                                   std::vector<OmissionSearchResult> &out) const
+{
+    if (currentNodeIndex < 0)
+        return;
+    if (static_cast<size_t>(currentNodeIndex) >= LBS_.size())
+        return;
+
+    // prefix search: if leaf at current node, accept currentYomi
+    if (static_cast<size_t>(currentNodeIndex) < isLeaf_.size() &&
+        isLeaf_.get(static_cast<size_t>(currentNodeIndex)))
+    {
+        out.push_back(OmissionSearchResult{currentYomi, omissionOccurred});
+    }
+
+    if (strIndex >= originalStr.size())
+        return;
+
+    const char16_t ch = originalStr[strIndex];
+    const auto vars = getCharVariations(ch);
+
+    for (char16_t variant : vars)
+    {
+        const bool newOmission = omissionOccurred || (variant != ch);
+
+        int childPos = firstChild(currentNodeIndex);
+        while (childPos >= 0 &&
+               static_cast<size_t>(childPos) < LBS_.size() &&
+               LBS_.get(static_cast<size_t>(childPos)))
+        {
+            const int labelIndex = lbsSucc_.rank1(childPos);
+            if (labelIndex >= 0 && static_cast<size_t>(labelIndex) < labels_.size())
+            {
+                if (labels_[static_cast<size_t>(labelIndex)] == variant)
+                {
+                    currentYomi.push_back(variant);
+                    searchRecursiveWithOmission(originalStr, strIndex + 1, childPos, currentYomi, newOmission, out);
+                    currentYomi.pop_back();
+                    break; // sibling labels are assumed unique
+                }
+            }
+            childPos += 1;
+        }
+    }
+}
+
+std::vector<LOUDSReaderUtf16::OmissionSearchResult>
+LOUDSReaderUtf16::commonPrefixSearchWithOmission(const std::u16string &str) const
+{
+    std::vector<OmissionSearchResult> raw;
+    raw.reserve(128);
+
+    std::u16string current;
+    current.reserve(str.size());
+
+    searchRecursiveWithOmission(str, 0, 0, current, false, raw);
+
+    // de-dup by yomi, merging omissionOccurred with OR (true wins)
+    std::vector<OmissionSearchResult> out;
+    out.reserve(raw.size());
+
+    for (const auto &r : raw)
+    {
+        bool found = false;
+        for (auto &e : out)
+        {
+            if (e.yomi == r.yomi)
+            {
+                e.omissionOccurred = (e.omissionOccurred || r.omissionOccurred);
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+            out.push_back(r);
+    }
+
+    std::sort(out.begin(), out.end(),
+              [](const OmissionSearchResult &a, const OmissionSearchResult &b)
+              {
+                  if (a.omissionOccurred != b.omissionOccurred)
+                      return a.omissionOccurred < b.omissionOccurred; // false first
+                  if (a.yomi.size() != b.yomi.size())
+                      return a.yomi.size() < b.yomi.size();
+                  return a.yomi < b.yomi;
+              });
+
+    return out;
+}
+
+// ---- Letter restore ----
+
 std::u16string LOUDSReaderUtf16::getLetter(int nodeIndex) const
 {
     if (nodeIndex < 0)
@@ -107,6 +345,8 @@ std::u16string LOUDSReaderUtf16::getLetter(int nodeIndex) const
     std::reverse(out.begin(), out.end());
     return out;
 }
+
+// ---- Node lookup ----
 
 int LOUDSReaderUtf16::getNodeIndex(const std::u16string &s) const
 {
@@ -157,6 +397,8 @@ int LOUDSReaderUtf16::search(int index, const std::u16string &chars, size_t word
     }
     return -1;
 }
+
+// ---- File I/O ----
 
 void LOUDSReaderUtf16::read_u64(std::istream &is, uint64_t &v)
 {

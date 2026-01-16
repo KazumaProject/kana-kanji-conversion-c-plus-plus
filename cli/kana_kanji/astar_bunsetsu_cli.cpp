@@ -180,6 +180,19 @@ static bool u16_to_utf8(const std::u16string &s, std::string &out)
     return true;
 }
 
+static kk::YomiSearchMode parse_yomi_mode(const std::string &s)
+{
+    if (s == "cps")
+        return kk::YomiSearchMode::CommonPrefixOnly;
+    if (s == "cps_pred")
+        return kk::YomiSearchMode::CommonPrefixPlusPredictive;
+    if (s == "cps_omit")
+        return kk::YomiSearchMode::CommonPrefixPlusOmission;
+    if (s == "all")
+        return kk::YomiSearchMode::All;
+    throw std::runtime_error("Unknown --yomi_mode: " + s + " (expected: cps|cps_pred|cps_omit|all)");
+}
+
 static void usage(const char *argv0)
 {
     std::cout
@@ -188,10 +201,21 @@ static void usage(const char *argv0)
         << " --yomi_termid <yomi_termid.louds> --tango <tango.louds> --tokens <token_array.bin>\n"
         << "      --pos_table <pos_table.bin> --conn <connection_single_column.bin>\n"
         << "      --q <utf8> [--n N] [--beam W] [--show_bunsetsu]\n"
+        << "      [--yomi_mode cps|cps_pred|cps_omit|all] [--pred_k K]\n"
         << "  " << argv0
         << " --yomi_termid <yomi_termid.louds> --tango <tango.louds> --tokens <token_array.bin>\n"
         << "      --pos_table <pos_table.bin> --conn <connection_single_column.bin>\n"
-        << "      --stdin [--n N] [--beam W] [--show_bunsetsu]\n";
+        << "      --stdin [--n N] [--beam W] [--show_bunsetsu]\n"
+        << "      [--yomi_mode cps|cps_pred|cps_omit|all] [--pred_k K]\n"
+        << "\n"
+        << "Notes:\n"
+        << "  --yomi_mode:\n"
+        << "    cps      : yomiCps.commonPrefixSearch only\n"
+        << "    cps_pred : commonPrefixSearch + predictiveSearch(prefix length = --pred_k)\n"
+        << "    cps_omit : commonPrefixSearch + commonPrefixSearchWithOmission\n"
+        << "    all      : all three\n"
+        << "  --pred_k:\n"
+        << "    predictiveSearch uses prefix = subStr.substr(0, K), then filters to yomi that are prefixes of subStr.\n";
 }
 
 static void run_one(const LOUDSReaderUtf16 &yomiCps,
@@ -203,7 +227,9 @@ static void run_one(const LOUDSReaderUtf16 &yomiCps,
                     const std::string &q_utf8,
                     int nBest,
                     int beamWidth,
-                    bool showBunsetsu)
+                    bool showBunsetsu,
+                    kk::YomiSearchMode yomiMode,
+                    int predK)
 {
     std::u16string q16;
     if (!utf8_to_u16(q_utf8, q16))
@@ -212,8 +238,8 @@ static void run_one(const LOUDSReaderUtf16 &yomiCps,
         return;
     }
 
-    // 1) build graph
-    kk::Graph graph = kk::GraphBuilder::constructGraph(q16, yomiCps, yomiTerm, tokens, pos, tango);
+    // 1) build graph (mode switch here)
+    kk::Graph graph = kk::GraphBuilder::constructGraph(q16, yomiCps, yomiTerm, tokens, pos, tango, yomiMode, predK);
 
     // 2) search
     auto [cands, bunsetsu] = kk::FindPath::backwardAStarWithBunsetsu(
@@ -223,7 +249,8 @@ static void run_one(const LOUDSReaderUtf16 &yomiCps,
         nBest,
         beamWidth);
 
-    std::cout << "query=" << q_utf8 << " len=" << q16.size() << " n=" << nBest << " beam=" << beamWidth << "\n";
+    std::cout << "query=" << q_utf8 << " len=" << q16.size() << " n=" << nBest << " beam=" << beamWidth
+              << " yomi_mode=" << static_cast<int>(yomiMode) << " pred_k=" << predK << "\n";
 
     if (showBunsetsu)
     {
@@ -268,6 +295,10 @@ int main(int argc, char **argv)
         int nBest = 10;
         int beamWidth = 20;
         bool showBunsetsu = false;
+
+        // Added
+        std::string yomi_mode_str = "cps";
+        int predK = 1;
 
         for (int i = 1; i < argc; ++i)
         {
@@ -328,6 +359,18 @@ int main(int argc, char **argv)
                 continue;
             }
 
+            // Added
+            if (a == "--yomi_mode" && i + 1 < argc)
+            {
+                yomi_mode_str = argv[++i];
+                continue;
+            }
+            if (a == "--pred_k" && i + 1 < argc)
+            {
+                predK = std::stoi(argv[++i]);
+                continue;
+            }
+
             throw std::runtime_error("Unknown/incomplete arg: " + a);
         }
 
@@ -338,6 +381,8 @@ int main(int argc, char **argv)
             usage(argv[0]);
             return 2;
         }
+
+        const kk::YomiSearchMode yomiMode = parse_yomi_mode(yomi_mode_str);
 
         // yomi_termid.louds: load twice (plain LOUDS for CPS, and WithTermId for getTermId)
         const auto yomiCps = LOUDSReaderUtf16::loadFromFile(yomi_termid_path);
@@ -354,7 +399,7 @@ int main(int argc, char **argv)
 
         if (!stdin_mode)
         {
-            run_one(yomiCps, yomiTerm, tokens, pos, tango, conn, q, nBest, beamWidth, showBunsetsu);
+            run_one(yomiCps, yomiTerm, tokens, pos, tango, conn, q, nBest, beamWidth, showBunsetsu, yomiMode, predK);
             return 0;
         }
 
@@ -366,7 +411,7 @@ int main(int argc, char **argv)
             if (line.empty())
                 continue;
 
-            run_one(yomiCps, yomiTerm, tokens, pos, tango, conn, line, nBest, beamWidth, showBunsetsu);
+            run_one(yomiCps, yomiTerm, tokens, pos, tango, conn, line, nBest, beamWidth, showBunsetsu, yomiMode, predK);
         }
 
         return 0;
