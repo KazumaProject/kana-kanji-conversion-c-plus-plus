@@ -9,7 +9,7 @@
 ### できること
 
 - Mozc 辞書のダウンロード（`mozc_dic_fetch`）
-- 変換用アーティファクト生成  
+- 変換用アーティファクト生成
   - 読み（yomi）→ termId の LOUDS（`yomi_termid.louds`）
   - 表記（tango）の LOUDS（`tango.louds`）
   - termId → トークン列（`token_array.bin`）
@@ -77,6 +77,7 @@ cmake --build build -j
 ```
 
 メモ：
+
 - `--out`（読み LOUDS）は、将来の拡張や検証用途です（変換本体の必須要件は上記 5 ファイルです）。
 - `connection_single_column.txt` の 1 行目をスキップする実装になっている場合があります（Mozc の形式に合わせた処理）。
 
@@ -109,7 +110,24 @@ cmake --build build -j
 echo "きょうはいいてんきです" | ./build/prefix_predict_cli   --yomi_termid build/yomi_termid.louds   --tango build/tango.louds   --tokens build/token_array.bin   --stdin   --limit 10
 ```
 
+### CommonPrefixSearch のみ
+
+```bash
+./build/astar_bunsetsu_cli --yomi_termid ./build/yomi_termid.louds --tango ./build/tango.louds --tokens ./build/token_array.bin --pos_table ./build/pos_table.bin --conn ./build/connection_single_column.bin --q きょうのてんき --n 10 --beam 50 --show_bunsetsu
+```
+
+### CommonPrefixSearch + 修飾キー省略
+
+```bash
+./build/astar_bunsetsu_cli --yomi_termid ./build/yomi_termid.louds --tango ./build/tango.louds --tokens ./build/token_array.bin --pos_table ./build/pos_table.bin --conn ./build/connection_single_column.bin --q かんし --n 10 --beam 50 --show_bunsetsu --yomi_mode cps_omit
+```
+
+```bash
+ ./build/astar_bunsetsu_cli --yomi_termid ./build/yomi_termid.louds --tango ./build/tango.louds --tokens ./build/token_array.bin --pos_table ./build/pos_table.bin --conn ./build/connection_single_column.bin --q あいあ --n 10 --beam 50 --show_bunsetsu --show_prediction --pred_n 8
+```
+
 メモ：
+
 - `prefix_predict_cli` は現状「挙動確認・デバッグ向け」に詳細ログを出力します。
 - `--no_dedup` を付けると、同一文字列候補の重複排除を無効化できます。
 
@@ -134,7 +152,7 @@ echo "きょうはいいてんきです" | ./build/prefix_predict_cli   --yomi_t
 ## ライセンス
 
 - **プログラム本体**：MIT License（`LICENSE`）
-- **辞書データ**：Mozc のライセンス（`LICENSE-MOZC`）  
+- **辞書データ**：Mozc のライセンス（`LICENSE-MOZC`）
   - 本リポジトリは Mozc の辞書データそのものを同梱せず、`mozc_dic_fetch` により取得します。
 
 ---
@@ -243,6 +261,7 @@ echo "きょうはいいてんきです" | ./build/prefix_predict_cli   --yomi_t
 ```
 
 Notes:
+
 - `prefix_predict_cli` is currently oriented toward debugging and prints verbose logs.
 - Use `--no_dedup` to disable output de-duplication.
 
@@ -251,5 +270,5 @@ Notes:
 ## License
 
 - **Code**: MIT License (`LICENSE`)
-- **Dictionary data**: Mozc license (`LICENSE-MOZC`)  
+- **Dictionary data**: Mozc license (`LICENSE-MOZC`)
   - This repository does not bundle Mozc dictionary data; it is fetched via `mozc_dic_fetch`.
