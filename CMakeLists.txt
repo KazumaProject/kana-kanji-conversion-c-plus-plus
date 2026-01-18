@@ -129,6 +129,15 @@ target_link_libraries(termid_cli PRIVATE louds_utf16)
 add_executable(prefix_predict_cli cli/kana_kanji/prefix_predict_cli.cpp)
 target_link_libraries(prefix_predict_cli PRIVATE token_array)
 
+add_executable(astar_bunsetsu_parallel_cli cli/kana_kanji/astar_bunsetsu_parallel_cli.cpp)
+target_link_libraries(astar_bunsetsu_parallel_cli PRIVATE
+  louds_utf16
+  token_array
+  connection_id
+  graph_builder
+  path_algorithm
+)
+
 # N-best kana-kanji conversion CLI (NEW)
 add_executable(astar_bunsetsu_cli cli/kana_kanji/astar_bunsetsu_cli.cpp)
 target_link_libraries(astar_bunsetsu_cli PRIVATE
