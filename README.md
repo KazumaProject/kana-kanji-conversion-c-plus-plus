@@ -126,6 +126,14 @@ echo "きょうはいいてんきです" | ./build/prefix_predict_cli   --yomi_t
  ./build/astar_bunsetsu_cli --yomi_termid ./build/yomi_termid.louds --tango ./build/tango.louds --tokens ./build/token_array.bin --pos_table ./build/pos_table.bin --conn ./build/connection_single_column.bin --q あいあ --n 10 --beam 50 --show_bunsetsu --show_prediction --pred_n 8
 ```
 
+```bash
+
+./build/astar_bunsetsu_parallel_cli --yomi_termid build/yomi_termid.louds --tango build/tango.louds --tokens build/token_array.bin --pos_table build/pos_table.bin --conn build/connection_single_column.bin --q "きょう" --n 4 --beam 20 --show_bunsetsu --show_omit
+
+./build/astar_bunsetsu_parallel_cli --yomi_termid build/yomi_termid.louds --tango build/tango.louds --tokens build/token_array.bin --pos_table build/pos_table.bin --conn build/connection_single_column.bin --q "わたしのなまえはなかのてす" --n 4 --beam 20 --show_bunsetsu --show_pred --show_omit --pred_k 1
+
+```
+
 メモ：
 
 - `prefix_predict_cli` は現状「挙動確認・デバッグ向け」に詳細ログを出力します。

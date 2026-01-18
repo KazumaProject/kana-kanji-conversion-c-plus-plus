@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <vector>
 #include <string>
+#include <istream>
 
 #include "common/bit_vector_utf16.hpp"
 #include "common/succinct_bit_vector_utf16.hpp"
@@ -13,7 +14,8 @@ public:
     struct OmissionSearchResult
     {
         std::u16string yomi;
-        bool omissionOccurred = false;
+        uint16_t replaceCount = 0;      // 置換が必要だった文字数
+        bool omissionOccurred = false;  // 置換が1回でも発生したか
     };
 
 public:
@@ -61,6 +63,7 @@ private:
                                      size_t strIndex,
                                      int currentNodeIndex,
                                      std::u16string &currentYomi,
+                                     uint16_t replaceCount,
                                      bool omissionOccurred,
                                      std::vector<OmissionSearchResult> &out) const;
 

@@ -228,6 +228,25 @@ static kk::YomiSearchMode parse_yomi_mode(const std::string &s)
     throw std::runtime_error("Unknown --yomi_mode: " + s + " (expected: cps|cps_pred|cps_omit|all)");
 }
 
+static kk::YomiSearchMode enable_omit_for_graph(kk::YomiSearchMode base)
+{
+    // --show_omit 時に「追加で」回す graph の mode を決める
+    switch (base)
+    {
+    case kk::YomiSearchMode::CommonPrefixOnly:
+        return kk::YomiSearchMode::CommonPrefixPlusOmission;
+    case kk::YomiSearchMode::CommonPrefixPlusPredictive:
+        // pred も活かしたいなら All が自然
+        return kk::YomiSearchMode::All;
+    case kk::YomiSearchMode::CommonPrefixPlusOmission:
+        return kk::YomiSearchMode::CommonPrefixPlusOmission;
+    case kk::YomiSearchMode::All:
+        return kk::YomiSearchMode::All;
+    default:
+        return kk::YomiSearchMode::CommonPrefixPlusOmission;
+    }
+}
+
 static void usage(const char *argv0)
 {
     std::cout
@@ -238,20 +257,24 @@ static void usage(const char *argv0)
         << "      --q <utf8> [--n N] [--beam W] [--show_bunsetsu]\n"
         << "      [--yomi_mode cps|cps_pred|cps_omit|all]\n"
         << "      [--pred_k K] [--show_pred] [--show_omit]\n"
-        << "      [--yomi_n N] [--final_n N] [--no_dedup]\n"
+        << "      [--yomi_n N] [--final_n N] [--no_dedup] [--no_global_dedup]\n"
         << "  " << argv0
         << " --yomi_termid <yomi_termid.louds> --tango <tango.louds> --tokens <token_array.bin>\n"
         << "      --pos_table <pos_table.bin> --conn <connection_single_column.bin>\n"
         << "      --stdin [--n N] [--beam W] [--show_bunsetsu]\n"
         << "      [--yomi_mode cps|cps_pred|cps_omit|all]\n"
         << "      [--pred_k K] [--show_pred] [--show_omit]\n"
-        << "      [--yomi_n N] [--final_n N] [--no_dedup]\n"
+        << "      [--yomi_n N] [--final_n N] [--no_dedup] [--no_global_dedup]\n"
         << "\n"
         << "Notes:\n"
         << "  - commonPrefixSearch candidates are ALWAYS included.\n"
         << "  - --show_pred: also include predictiveSearch-derived candidates.\n"
         << "  - --show_omit: also include omissionSearch-derived candidates.\n"
-        << "  - All three (graph/A*, cps, pred, omit) are executed in parallel.\n"
+        << "  - Graph/A* is executed in parallel with cps/pred/omit.\n"
+        << "  - When --show_omit is enabled, an additional graph/A* run (src=graph_omit)\n"
+        << "    is performed with omissionSearch enabled in graph construction.\n"
+        << "  - Global dedup (default ON) removes duplicates across sources by surface (+LR when available).\n"
+        << "    Use --no_global_dedup to disable.\n"
         << "  - If query length is 1 hiragana, limits are auto-disabled (may be huge).\n";
 }
 
@@ -272,19 +295,44 @@ struct U16Hash
     }
 };
 
+// -----------------------------
+// Final dedup key for printing (surface + yomi, ignoring src and L/R)
+// -----------------------------
+struct FinalDedupKey
+{
+    std::u16string surface;
+    std::u16string yomi;
+
+    bool operator==(const FinalDedupKey &o) const noexcept
+    {
+        return surface == o.surface && yomi == o.yomi;
+    }
+};
+
+struct FinalDedupKeyHash
+{
+    size_t operator()(const FinalDedupKey &k) const noexcept
+    {
+        U16Hash h16;
+        size_t h = h16(k.surface);
+        h ^= (h16(k.yomi) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2));
+        return h;
+    }
+};
+
 struct CandidateRow
 {
     std::u16string surface;
-    std::u16string yomi;      // empty for some graph candidates if unknown
+    std::u16string yomi; // empty for some graph candidates if unknown
     int score = 0;
-    int type = 0;             // graph candidate type or 0 for yomi-derived
+    int type = 0; // graph candidate type or 0 for yomi-derived
     bool hasLR = false;
     int16_t l = 0;
     int16_t r = 0;
-    std::string source;       // "graph" | "cps" | "pred" | "omit"
+    std::string source; // "graph" | "graph_omit" | "cps" | "pred" | "omit"
 };
 
-// Dedup key (surface + yomi + source + L/R)
+// Dedup key (surface + yomi + source + L/R)  ※yomi展開側で使う（既存）
 struct DedupKey
 {
     std::u16string surface;
@@ -306,19 +354,126 @@ struct DedupKeyHash
         U16Hash h16;
         size_t h = h16(k.surface);
         h ^= (h16(k.yomi) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2));
-        // source hash
         std::hash<std::string> hs;
         h ^= (hs(k.source) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2));
-        // lr
         h ^= (static_cast<size_t>(static_cast<uint16_t>(k.l)) << 16) ^ static_cast<size_t>(static_cast<uint16_t>(k.r));
         return h;
     }
 };
 
 // -----------------------------
+// Global (cross-source) dedup by surface (+LR when available)
+// -----------------------------
+static int source_preference_rank_for_dedup(const std::string &src)
+{
+    // 同scoreの場合にどれを残すか（小さいほど優先）
+    if (src == "graph")
+        return 0;
+    if (src == "graph_omit")
+        return 1;
+    if (src == "cps")
+        return 2;
+    if (src == "pred")
+        return 3;
+    if (src == "omit")
+        return 4;
+    return 9;
+}
+
+struct GlobalDedupKey
+{
+    std::u16string surface;
+    bool hasLR = false;
+    int16_t l = 0;
+    int16_t r = 0;
+
+    bool operator==(const GlobalDedupKey &o) const noexcept
+    {
+        return surface == o.surface && hasLR == o.hasLR && l == o.l && r == o.r;
+    }
+};
+
+struct GlobalDedupKeyHash
+{
+    size_t operator()(const GlobalDedupKey &k) const noexcept
+    {
+        U16Hash h16;
+        size_t h = h16(k.surface);
+        h ^= (static_cast<size_t>(k.hasLR ? 1 : 0) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2));
+        // LRはhasLRのときだけ意味があるが、キーとしてはそのまま混ぜる
+        h ^= (static_cast<size_t>(static_cast<uint16_t>(k.l)) << 16) ^ static_cast<size_t>(static_cast<uint16_t>(k.r));
+        return h;
+    }
+};
+
+static std::vector<CandidateRow> global_dedup_best(std::vector<CandidateRow> rows)
+{
+    std::unordered_map<GlobalDedupKey, CandidateRow, GlobalDedupKeyHash> best;
+    best.reserve(rows.size() * 2);
+
+    for (auto &row : rows)
+    {
+        GlobalDedupKey key;
+        key.surface = row.surface;
+        key.hasLR = row.hasLR;
+        key.l = row.l;
+        key.r = row.r;
+
+        auto it = best.find(key);
+        if (it == best.end())
+        {
+            best.emplace(std::move(key), std::move(row));
+            continue;
+        }
+
+        CandidateRow &cur = it->second;
+
+        // (1) scoreが小さい方を残す
+        if (row.score < cur.score)
+        {
+            cur = std::move(row);
+            continue;
+        }
+        if (row.score > cur.score)
+            continue;
+
+        // (2) 同点なら source 優先順位
+        const int rNew = source_preference_rank_for_dedup(row.source);
+        const int rCur = source_preference_rank_for_dedup(cur.source);
+        if (rNew < rCur)
+        {
+            cur = std::move(row);
+            continue;
+        }
+        if (rNew > rCur)
+            continue;
+
+        // (3) さらに同点なら、yomiが埋まっている方を優先（デバッグ時に情報が残る）
+        const bool newHasYomi = !row.yomi.empty();
+        const bool curHasYomi = !cur.yomi.empty();
+        if (newHasYomi && !curHasYomi)
+        {
+            cur = std::move(row);
+            continue;
+        }
+
+        // (4) 最後の安定化：typeが小さい方（任意）
+        if (row.type < cur.type)
+        {
+            cur = std::move(row);
+            continue;
+        }
+    }
+
+    std::vector<CandidateRow> out;
+    out.reserve(best.size());
+    for (auto &kv : best)
+        out.push_back(std::move(kv.second));
+    return out;
+}
+
+// -----------------------------
 // Expand yomi list -> surface candidates via termId/tokens/tango
-//  - If dedup=true: keep best (min score) per (surface,yomi,source,L,R)
-//  - If query length == 1: do NOT compress by surface; emit all tokens (still optional dedup)
 // -----------------------------
 static std::vector<CandidateRow> expand_yomi_candidates(
     const std::string &sourceName,
@@ -340,7 +495,6 @@ static std::vector<CandidateRow> expand_yomi_candidates(
 
     if (!dedup)
     {
-        // emit all (may be huge)
         for (size_t i = 0; i < lim; ++i)
         {
             const auto &yomi = yomis[i];
@@ -378,7 +532,6 @@ static std::vector<CandidateRow> expand_yomi_candidates(
         return out;
     }
 
-    // dedup path
     std::unordered_map<DedupKey, CandidateRow, DedupKeyHash> best;
     best.reserve(4096);
 
@@ -419,13 +572,11 @@ static std::vector<CandidateRow> expand_yomi_candidates(
             row.l = l;
             row.r = r;
 
-            // single char: "全部表示"の意図が強いので、dedupはしても「surfaceごとに1つ」ではなく
-            // ここでは (surface,yomi,L,R,source) 単位で最良だけに留める（同一キーの重複だけ潰す）。
             auto it = best.find(key);
             if (it == best.end() || row.score < it->second.score)
                 best[std::move(key)] = std::move(row);
 
-            (void)queryIsSingleChar; // kept for future policy tweaks
+            (void)queryIsSingleChar;
         }
     }
 
@@ -440,14 +591,10 @@ static std::vector<CandidateRow> expand_yomi_candidates(
 // -----------------------------
 static std::vector<std::u16string> get_cps_yomis(const LOUDSReaderUtf16 &yomiCps, const std::u16string &q16)
 {
-    // Always include
     return yomiCps.commonPrefixSearch(q16);
 }
 
 // --- OmissionSearchResult -> u16string extractor (C++20) ---
-// commonPrefixSearchWithOmission() returns vector<OmissionSearchResult> (project-defined).
-// This extracts the "yomi" string field. If your struct uses a different field name,
-// add a new branch here.
 template <class T>
 static std::u16string extract_u16_yomi(const T &r)
 {
@@ -481,7 +628,7 @@ static std::u16string extract_u16_yomi(const T &r)
                       "OmissionSearchResult does not expose a u16string field "
                       "(expected one of: yomi/text/prefix/key/surface). "
                       "Update extract_u16_yomi() to match your struct.");
-        return {}; // unreachable
+        return {};
     }
 }
 
@@ -509,7 +656,6 @@ static std::vector<std::u16string> get_pred_yomis(const LOUDSReaderUtf16 &yomiCp
 
     const auto preds = yomiCps.predictiveSearch(prefix);
 
-    // Keep only yomi that start with q16
     std::vector<std::u16string> out;
     out.reserve(preds.size());
     for (const auto &y : preds)
@@ -530,6 +676,7 @@ struct GraphResult
 };
 
 static GraphResult run_graph_astar(
+    const std::string &sourceName,
     const LOUDSReaderUtf16 &yomiCps,
     const LOUDSWithTermIdReaderUtf16 &yomiTerm,
     const TokenArray &tokens,
@@ -559,8 +706,8 @@ static GraphResult run_graph_astar(
     for (const auto &c : cands)
     {
         CandidateRow row;
-        row.source = "graph";
-        row.surface = c.string; // already u16
+        row.source = sourceName;
+        row.surface = c.string;
         row.score = c.score;
         row.type = static_cast<int>(c.type);
         row.hasLR = c.hasLR;
@@ -569,7 +716,6 @@ static GraphResult run_graph_astar(
             row.l = c.leftId;
             row.r = c.rightId;
         }
-        // yomi is not necessarily available in this candidate struct
         gr.rows.push_back(std::move(row));
     }
     return gr;
@@ -578,6 +724,34 @@ static GraphResult run_graph_astar(
 // -----------------------------
 // Sorting & printing
 // -----------------------------
+static bool is_graph_src(const std::string &src)
+{
+    return (src == "graph" || src == "graph_omit");
+}
+
+static int graph_src_tiebreak_rank(const std::string &src)
+{
+    // graph と graph_omit が同スコア時だけ使う
+    if (src == "graph")
+        return 0;
+    if (src == "graph_omit")
+        return 1;
+    return 9;
+}
+
+static int other_src_rank(const std::string &src)
+{
+    // graph系より下のグループ内での安定化用
+    if (src == "cps")
+        return 0;
+    if (src == "pred")
+        return 1;
+    if (src == "omit")
+        return 2;
+    return 9;
+}
+
+
 static void print_rows(
     const std::string &qUtf8,
     const std::u16string &q16,
@@ -590,14 +764,81 @@ static void print_rows(
     std::sort(rows.begin(), rows.end(),
               [](const CandidateRow &a, const CandidateRow &b)
               {
+                  const bool ag = is_graph_src(a.source);
+                  const bool bg = is_graph_src(b.source);
+
+                  // (1) graph / graph_omit は最上段グループ
+                  if (ag != bg)
+                      return ag > bg; // true first
+
+                  // (2) graph group: score順（sourceで分けない）
+                  if (ag && bg)
+                  {
+                      if (a.score != b.score)
+                          return a.score < b.score;
+
+                      // 同点時だけ安定化（graph -> graph_omit）
+                      const int ra = graph_src_tiebreak_rank(a.source);
+                      const int rb = graph_src_tiebreak_rank(b.source);
+                      if (ra != rb)
+                          return ra < rb;
+
+                      if (a.surface != b.surface)
+                          return a.surface < b.surface;
+                      if (a.type != b.type)
+                          return a.type < b.type;
+                      if (a.yomi != b.yomi)
+                          return a.yomi < b.yomi;
+                      return false;
+                  }
+
+                  // (3) それ以外: yomi長さ順（長い順）→ 同長ならスコア順
+                  const size_t la = a.yomi.size();
+                  const size_t lb = b.yomi.size();
+                  if (la != lb)
+                      return la > lb; // 長い順
+
                   if (a.score != b.score)
                       return a.score < b.score;
-                  if (a.source != b.source)
-                      return a.source < b.source;
+
+                  // 以降は安定化
+                  const int ra = other_src_rank(a.source);
+                  const int rb = other_src_rank(b.source);
+                  if (ra != rb)
+                      return ra < rb;
+
                   if (a.surface != b.surface)
                       return a.surface < b.surface;
-                  return a.yomi < b.yomi;
+
+                  if (a.yomi != b.yomi)
+                      return a.yomi < b.yomi;
+
+                  return a.type < b.type;
               });
+
+    // -----------------------------
+    // Final dedup AFTER sorting:
+    //   - remove duplicates like "わたし" appearing multiple times due to POS/LR differences
+    //   - remove duplicates between graph and graph_omit when surface+yomi identical
+    // Keep the first one (best-ranked) after sort.
+    // -----------------------------
+    {
+        std::unordered_set<FinalDedupKey, FinalDedupKeyHash> seen;
+        seen.reserve(rows.size() * 2);
+
+        std::vector<CandidateRow> uniq;
+        uniq.reserve(rows.size());
+
+        for (auto &r : rows)
+        {
+            FinalDedupKey key{r.surface, r.yomi};
+            if (seen.insert(key).second)
+            {
+                uniq.push_back(std::move(r));
+            }
+        }
+        rows = std::move(uniq);
+    }
 
     std::cout << "query=" << qUtf8 << " len=" << q16.size() << "\n";
 
@@ -610,7 +851,7 @@ static void print_rows(
     }
 
     const size_t n = std::min(finalLimit, rows.size());
-    std::cout << "candidates_sorted_by_score: " << n << "/" << rows.size() << "\n";
+    std::cout << "candidates_sorted: " << n << "/" << rows.size() << "\n";
     for (size_t i = 0; i < n; ++i)
     {
         std::string surf8, y8;
@@ -659,7 +900,8 @@ static void run_one_parallel(
     bool showOmit,
     size_t yomiLimit,
     size_t finalLimit,
-    bool dedup)
+    bool dedup,
+    bool globalDedup)
 {
     std::u16string q16;
     if (!utf8_to_u16(q_utf8, q16))
@@ -670,20 +912,28 @@ static void run_one_parallel(
 
     const bool queryIsSingleChar = (q16.size() == 1);
 
-    // "1文字は全部表示" ポリシー: 自動で上限解除（ユーザーが明示指定していない限り）
-    // ここでは、ユーザーが --yomi_n / --final_n を指定した場合はその値が来る想定。
-    // main側でデフォルト値を入れているので、1文字なら解除する。
     if (queryIsSingleChar)
     {
-        if (yomiLimit != 0) // 0は「抑止」として扱いたいので解除しない
+        if (yomiLimit != 0)
             yomiLimit = std::numeric_limits<size_t>::max();
         if (finalLimit != 0)
             finalLimit = std::numeric_limits<size_t>::max();
     }
 
     // 1) parallel tasks
-    auto futGraph = std::async(std::launch::async, [&]()
-                               { return run_graph_astar(yomiCps, yomiTerm, tokens, pos, tango, conn, q16, nBest, beamWidth, yomiMode, predK); });
+    auto futGraphBase = std::async(std::launch::async, [&]()
+                                   { return run_graph_astar("graph", yomiCps, yomiTerm, tokens, pos, tango, conn, q16, nBest, beamWidth, yomiMode, predK); });
+
+    // --show_omit の場合、omission を必ず有効化した graph を「追加で」回す
+    std::future<GraphResult> futGraphOmit;
+    bool runGraphOmit = false;
+    kk::YomiSearchMode omitGraphMode = enable_omit_for_graph(yomiMode);
+    if (showOmit && (omitGraphMode != yomiMode))
+    {
+        runGraphOmit = true;
+        futGraphOmit = std::async(std::launch::async, [&]()
+                                  { return run_graph_astar("graph_omit", yomiCps, yomiTerm, tokens, pos, tango, conn, q16, nBest, beamWidth, omitGraphMode, predK); });
+    }
 
     auto futCps = std::async(std::launch::async, [&]()
                              { return get_cps_yomis(yomiCps, q16); });
@@ -702,8 +952,13 @@ static void run_one_parallel(
                              { return get_omit_yomis(yomiCps, q16); });
     }
 
-    // 2) collect results (graph + yomi lists)
-    GraphResult gr = futGraph.get();
+    // 2) collect results
+    GraphResult grBase = futGraphBase.get();
+    GraphResult grOmit;
+    if (runGraphOmit)
+        grOmit = futGraphOmit.get();
+
+    // bunsetsu は基本 graph のものを採用
     const auto cpsYomis = futCps.get();
 
     std::vector<std::u16string> predYomis;
@@ -743,11 +998,16 @@ static void run_one_parallel(
 
     // 4) merge all rows
     std::vector<CandidateRow> all;
-    all.reserve(gr.rows.size() + cpsRows.size() + predRows.size() + omitRows.size());
+    all.reserve(grBase.rows.size() + grOmit.rows.size() + cpsRows.size() + predRows.size() + omitRows.size());
 
-    // graph
-    for (auto &r : gr.rows)
+    // graph (base)
+    for (auto &r : grBase.rows)
         all.push_back(std::move(r));
+
+    // graph_omit (additional)
+    for (auto &r : grOmit.rows)
+        all.push_back(std::move(r));
+
     // cps always
     for (auto &r : cpsRows)
         all.push_back(std::move(r));
@@ -757,11 +1017,12 @@ static void run_one_parallel(
     for (auto &r : omitRows)
         all.push_back(std::move(r));
 
-    // optional global dedup across sources? -> 仕様にないので実施しない（見たい情報が消える可能性がある）
-    // ただし --no_dedup の場合でも同一行が増えるだけで安全。
+    // 4.5) GLOBAL dedup across sources (surface + LR)
+    if (globalDedup)
+        all = global_dedup_best(std::move(all));
 
     // 5) print
-    print_rows(q_utf8, q16, gr.bunsetsu, showBunsetsu, std::move(all),
+    print_rows(q_utf8, q16, grBase.bunsetsu, showBunsetsu, std::move(all),
                (finalLimit == 0 ? 0 : finalLimit));
 }
 
@@ -785,15 +1046,14 @@ int main(int argc, char **argv)
         std::string yomi_mode_str = "cps";
         int predK = 1;
 
-        // New options
-        bool showPred = false; // predictive candidates
-        bool showOmit = false; // omission candidates
+        bool showPred = false;
+        bool showOmit = false;
 
-        // limits (0 means suppress printing if used for finalLimit; for yomiLimit, 0 means "process none")
-        size_t yomiLimit = 200;  // default cap per yomi-source (auto-disabled for 1 char)
-        size_t finalLimit = 200; // default cap for merged output (auto-disabled for 1 char)
+        size_t yomiLimit = 200;
+        size_t finalLimit = 200;
 
-        bool dedup = true; // default: reduce trivial duplicates in yomi expansion
+        bool dedup = true;
+        bool globalDedup = true;
 
         for (int i = 1; i < argc; ++i)
         {
@@ -864,7 +1124,6 @@ int main(int argc, char **argv)
                 continue;
             }
 
-            // new
             if (a == "--show_pred")
             {
                 showPred = true;
@@ -888,6 +1147,11 @@ int main(int argc, char **argv)
             if (a == "--no_dedup")
             {
                 dedup = false;
+                continue;
+            }
+            if (a == "--no_global_dedup")
+            {
+                globalDedup = false;
                 continue;
             }
 
@@ -924,7 +1188,7 @@ int main(int argc, char **argv)
                 yomiMode, predK,
                 showPred, showOmit,
                 yomiLimit, finalLimit,
-                dedup);
+                dedup, globalDedup);
             return 0;
         }
 
@@ -942,7 +1206,7 @@ int main(int argc, char **argv)
                 yomiMode, predK,
                 showPred, showOmit,
                 yomiLimit, finalLimit,
-                dedup);
+                dedup, globalDedup);
         }
 
         return 0;
