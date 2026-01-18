@@ -221,6 +221,7 @@ void LOUDSReaderUtf16::searchRecursiveWithOmission(const std::u16string &origina
                                                    size_t strIndex,
                                                    int currentNodeIndex,
                                                    std::u16string &currentYomi,
+                                                   uint16_t replaceCount,
                                                    bool omissionOccurred,
                                                    std::vector<OmissionSearchResult> &out) const
 {
@@ -233,7 +234,7 @@ void LOUDSReaderUtf16::searchRecursiveWithOmission(const std::u16string &origina
     if (static_cast<size_t>(currentNodeIndex) < isLeaf_.size() &&
         isLeaf_.get(static_cast<size_t>(currentNodeIndex)))
     {
-        out.push_back(OmissionSearchResult{currentYomi, omissionOccurred});
+        out.push_back(OmissionSearchResult{currentYomi, replaceCount, omissionOccurred});
     }
 
     if (strIndex >= originalStr.size())
@@ -244,7 +245,11 @@ void LOUDSReaderUtf16::searchRecursiveWithOmission(const std::u16string &origina
 
     for (char16_t variant : vars)
     {
-        const bool newOmission = omissionOccurred || (variant != ch);
+        const bool replaced = (variant != ch);
+        const bool newOmission = omissionOccurred || replaced;
+
+        // replaceCount は「置換が必要だった文字数」
+        const uint16_t newReplaceCount = static_cast<uint16_t>(replaceCount + (replaced ? 1 : 0));
 
         int childPos = firstChild(currentNodeIndex);
         while (childPos >= 0 &&
@@ -257,7 +262,7 @@ void LOUDSReaderUtf16::searchRecursiveWithOmission(const std::u16string &origina
                 if (labels_[static_cast<size_t>(labelIndex)] == variant)
                 {
                     currentYomi.push_back(variant);
-                    searchRecursiveWithOmission(originalStr, strIndex + 1, childPos, currentYomi, newOmission, out);
+                    searchRecursiveWithOmission(originalStr, strIndex + 1, childPos, currentYomi, newReplaceCount, newOmission, out);
                     currentYomi.pop_back();
                     break; // sibling labels are assumed unique
                 }
@@ -276,9 +281,11 @@ LOUDSReaderUtf16::commonPrefixSearchWithOmission(const std::u16string &str) cons
     std::u16string current;
     current.reserve(str.size());
 
-    searchRecursiveWithOmission(str, 0, 0, current, false, raw);
+    searchRecursiveWithOmission(str, 0, 0, current, /*replaceCount=*/0, /*omissionOccurred=*/false, raw);
 
-    // de-dup by yomi, merging omissionOccurred with OR (true wins)
+    // de-dup by yomi:
+    // - omissionOccurred: OR (true wins)
+    // - replaceCount: min (少ない置換数を優先)
     std::vector<OmissionSearchResult> out;
     out.reserve(raw.size());
 
@@ -290,6 +297,8 @@ LOUDSReaderUtf16::commonPrefixSearchWithOmission(const std::u16string &str) cons
             if (e.yomi == r.yomi)
             {
                 e.omissionOccurred = (e.omissionOccurred || r.omissionOccurred);
+                if (r.replaceCount < e.replaceCount)
+                    e.replaceCount = r.replaceCount;
                 found = true;
                 break;
             }
@@ -298,11 +307,15 @@ LOUDSReaderUtf16::commonPrefixSearchWithOmission(const std::u16string &str) cons
             out.push_back(r);
     }
 
+    // sort:
+    // - replaceCount 少ない順
+    // - yomi 長さ短い順（commonPrefix用途なので短い方が先）
+    // - lex
     std::sort(out.begin(), out.end(),
               [](const OmissionSearchResult &a, const OmissionSearchResult &b)
               {
-                  if (a.omissionOccurred != b.omissionOccurred)
-                      return a.omissionOccurred < b.omissionOccurred; // false first
+                  if (a.replaceCount != b.replaceCount)
+                      return a.replaceCount < b.replaceCount;
                   if (a.yomi.size() != b.yomi.size())
                       return a.yomi.size() < b.yomi.size();
                   return a.yomi < b.yomi;

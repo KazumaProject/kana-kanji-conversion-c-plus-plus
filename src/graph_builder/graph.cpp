@@ -1,10 +1,11 @@
-// src/graph_builder/graph.cpp
 #include "graph_builder/graph.hpp"
 
 #include <algorithm>
 #include <fstream>
 #include <stdexcept>
 #include <unordered_set>
+#include <unordered_map>
+#include <limits>
 
 namespace kk
 {
@@ -159,7 +160,7 @@ namespace kk
     }
 
     // -----------------------------
-    // u16 hash for unordered_set
+    // u16 hash for unordered_set / unordered_map
     // -----------------------------
     struct U16Hash
     {
@@ -174,13 +175,6 @@ namespace kk
             return static_cast<size_t>(h);
         }
     };
-
-    static bool is_prefix_of(const std::u16string &full, const std::u16string &maybePrefix)
-    {
-        if (maybePrefix.size() > full.size())
-            return false;
-        return full.compare(0, maybePrefix.size(), maybePrefix) == 0;
-    }
 
     // -----------------------------
     // GraphBuilder::constructGraph
@@ -211,11 +205,17 @@ namespace kk
             const std::u16string subStr = str.substr(static_cast<size_t>(i));
             bool foundInAnyDictionary = false;
 
-            // 集約（重複排除）
+            // 集約（重複排除）:
+            // yomiHits: 処理対象のユニーク yomi
+            // replaceCountByYomi: その yomi が omission 由来なら置換数（最小）を保持
             std::vector<std::u16string> yomiHits;
             yomiHits.reserve(256);
+
             std::unordered_set<std::u16string, U16Hash> seen;
             seen.reserve(256);
+
+            std::unordered_map<std::u16string, uint16_t, U16Hash> replaceCountByYomi;
+            replaceCountByYomi.reserve(256);
 
             // (A) commonPrefixSearch は常に含める（要求仕様に合わせる）
             {
@@ -226,7 +226,10 @@ namespace kk
                 for (const auto &y : cps)
                 {
                     if (seen.insert(y).second)
+                    {
                         yomiHits.push_back(y);
+                        replaceCountByYomi.emplace(y, static_cast<uint16_t>(0));
+                    }
                 }
             }
 
@@ -240,12 +243,24 @@ namespace kk
                 for (const auto &r : omits)
                 {
                     // omission なので subStr と文字が一致しない可能性はあるが、
-                    // 消費長は r.yomi.size() として扱う（探索時に1文字ずつ進んでいるため）。
-                    // ただし残り長を超えるものは捨てる。
+                    // 消費長は r.yomi.size() として扱う。
                     if (r.yomi.size() > subStr.size())
                         continue;
-                    if (seen.insert(r.yomi).second)
-                        yomiHits.push_back(r.yomi);
+
+                    auto it = replaceCountByYomi.find(r.yomi);
+                    if (it == replaceCountByYomi.end())
+                    {
+                        // 初出
+                        if (seen.insert(r.yomi).second)
+                            yomiHits.push_back(r.yomi);
+                        replaceCountByYomi.emplace(r.yomi, r.replaceCount);
+                    }
+                    else
+                    {
+                        // 既出なら replaceCount は最小を採用
+                        if (r.replaceCount < it->second)
+                            it->second = r.replaceCount;
+                    }
                 }
             }
 
@@ -258,6 +273,15 @@ namespace kk
 
                 const auto listToken = tokens.getTokensForTermId(termId);
                 const int endIndex = i + static_cast<int>(yomiStr.size());
+
+                // ★ omission 由来の置換数ペナルティ: replaceCount * 1000
+                uint16_t replaceCount = 0;
+                {
+                    auto it = replaceCountByYomi.find(yomiStr);
+                    if (it != replaceCountByYomi.end())
+                        replaceCount = it->second;
+                }
+                const int penalty = static_cast<int>(replaceCount) * 1000;
 
                 for (const auto &t : listToken)
                 {
@@ -276,7 +300,9 @@ namespace kk
                     }
 
                     const auto [l, r] = pos.getLR(t.posIndex);
-                    const int cost = static_cast<int>(t.wordCost);
+
+                    // ★ ここでノードコストに penalty を加算（graph_omit のスコアへ反映される）
+                    const int cost = static_cast<int>(t.wordCost) + penalty;
 
                     Node node(
                         /*l=*/l,
