@@ -257,6 +257,7 @@ static void usage(const char *argv0)
         << "      --q <utf8> [--n N] [--beam W] [--show_bunsetsu]\n"
         << "      [--yomi_mode cps|cps_pred|cps_omit|all]\n"
         << "      [--pred_k K] [--show_pred] [--show_omit]\n"
+        << "      [--pred_len_penalty P]\n"
         << "      [--yomi_n N] [--final_n N] [--no_dedup] [--no_global_dedup]\n"
         << "  " << argv0
         << " --yomi_termid <yomi_termid.louds> --tango <tango.louds> --tokens <token_array.bin>\n"
@@ -264,6 +265,7 @@ static void usage(const char *argv0)
         << "      --stdin [--n N] [--beam W] [--show_bunsetsu]\n"
         << "      [--yomi_mode cps|cps_pred|cps_omit|all]\n"
         << "      [--pred_k K] [--show_pred] [--show_omit]\n"
+        << "      [--pred_len_penalty P]\n"
         << "      [--yomi_n N] [--final_n N] [--no_dedup] [--no_global_dedup]\n"
         << "\n"
         << "Notes:\n"
@@ -275,7 +277,8 @@ static void usage(const char *argv0)
         << "    is performed with omissionSearch enabled in graph construction.\n"
         << "  - Global dedup (default ON) removes duplicates across sources by surface (+LR when available).\n"
         << "    Use --no_global_dedup to disable.\n"
-        << "  - If query length is 1 hiragana, limits are auto-disabled (may be huge).\n";
+        << "  - If query length is 1 hiragana, limits are auto-disabled (may be huge).\n"
+        << "  - --pred_len_penalty: if --show_pred, add (yomi_len - query_len)*P to wordCost for src=pred.\n";
 }
 
 // -----------------------------
@@ -484,7 +487,9 @@ static std::vector<CandidateRow> expand_yomi_candidates(
     const LOUDSReaderUtf16 &tango,
     bool dedup,
     bool queryIsSingleChar,
-    size_t yomiLimit // max yomis to process; SIZE_MAX for no limit
+    size_t yomiLimit,     // max yomis to process; SIZE_MAX for no limit
+    size_t queryLen,      // q16.size()
+    int predLenPenalty    // per extra char penalty for src=pred
 )
 {
     std::vector<CandidateRow> out;
@@ -492,6 +497,24 @@ static std::vector<CandidateRow> expand_yomi_candidates(
         return out;
 
     const size_t lim = std::min(yomiLimit, yomis.size());
+
+    auto calc_penalty = [&](const std::u16string &yomi) -> int
+    {
+        if (sourceName != "pred")
+            return 0;
+        if (predLenPenalty <= 0)
+            return 0;
+        if (yomi.size() <= queryLen)
+            return 0;
+        const size_t extra = yomi.size() - queryLen;
+        // int overflow guard (practically small, but still)
+        const uint64_t p = static_cast<uint64_t>(predLenPenalty);
+        const uint64_t e = static_cast<uint64_t>(extra);
+        const uint64_t pen = p * e;
+        if (pen > static_cast<uint64_t>(std::numeric_limits<int>::max()))
+            return std::numeric_limits<int>::max();
+        return static_cast<int>(pen);
+    };
 
     if (!dedup)
     {
@@ -502,13 +525,15 @@ static std::vector<CandidateRow> expand_yomi_candidates(
             if (termId < 0)
                 continue;
 
+            const int penalty = calc_penalty(yomi);
+
             const auto listToken = tokens.getTokensForTermId(termId);
             for (const auto &t : listToken)
             {
                 CandidateRow row;
                 row.source = sourceName;
                 row.yomi = yomi;
-                row.score = static_cast<int>(t.wordCost);
+                row.score = static_cast<int>(t.wordCost) + penalty;
                 row.type = 0;
 
                 std::u16string surface;
@@ -529,6 +554,7 @@ static std::vector<CandidateRow> expand_yomi_candidates(
                 out.push_back(std::move(row));
             }
         }
+        (void)queryIsSingleChar;
         return out;
     }
 
@@ -541,6 +567,8 @@ static std::vector<CandidateRow> expand_yomi_candidates(
         const int32_t termId = yomiTerm.getTermId(yomi);
         if (termId < 0)
             continue;
+
+        const int penalty = calc_penalty(yomi);
 
         const auto listToken = tokens.getTokensForTermId(termId);
         for (const auto &t : listToken)
@@ -566,7 +594,7 @@ static std::vector<CandidateRow> expand_yomi_candidates(
             row.source = sourceName;
             row.surface = std::move(surface);
             row.yomi = yomi;
-            row.score = static_cast<int>(t.wordCost);
+            row.score = static_cast<int>(t.wordCost) + penalty;
             row.type = 0;
             row.hasLR = true;
             row.l = l;
@@ -751,7 +779,6 @@ static int other_src_rank(const std::string &src)
     return 9;
 }
 
-
 static void print_rows(
     const std::string &qUtf8,
     const std::u16string &q16,
@@ -898,6 +925,7 @@ static void run_one_parallel(
     int predK,
     bool showPred,
     bool showOmit,
+    int predLenPenalty,
     size_t yomiLimit,
     size_t finalLimit,
     bool dedup,
@@ -970,21 +998,23 @@ static void run_one_parallel(
         omitYomis = futOmit.get();
 
     // 3) expand yomi candidates (also parallel)
+    const size_t queryLen = q16.size();
+
     auto futCpsRows = std::async(std::launch::async, [&]()
-                                 { return expand_yomi_candidates("cps", cpsYomis, yomiTerm, tokens, pos, tango, dedup, queryIsSingleChar, yomiLimit); });
+                                 { return expand_yomi_candidates("cps", cpsYomis, yomiTerm, tokens, pos, tango, dedup, queryIsSingleChar, yomiLimit, queryLen, predLenPenalty); });
 
     std::future<std::vector<CandidateRow>> futPredRows;
     if (showPred)
     {
         futPredRows = std::async(std::launch::async, [&]()
-                                 { return expand_yomi_candidates("pred", predYomis, yomiTerm, tokens, pos, tango, dedup, queryIsSingleChar, yomiLimit); });
+                                 { return expand_yomi_candidates("pred", predYomis, yomiTerm, tokens, pos, tango, dedup, queryIsSingleChar, yomiLimit, queryLen, predLenPenalty); });
     }
 
     std::future<std::vector<CandidateRow>> futOmitRows;
     if (showOmit)
     {
         futOmitRows = std::async(std::launch::async, [&]()
-                                 { return expand_yomi_candidates("omit", omitYomis, yomiTerm, tokens, pos, tango, dedup, queryIsSingleChar, yomiLimit); });
+                                 { return expand_yomi_candidates("omit", omitYomis, yomiTerm, tokens, pos, tango, dedup, queryIsSingleChar, yomiLimit, queryLen, predLenPenalty); });
     }
 
     auto cpsRows = futCpsRows.get();
@@ -1048,6 +1078,9 @@ int main(int argc, char **argv)
 
         bool showPred = false;
         bool showOmit = false;
+
+        // 追加: pred候補の「入力より長い分」へのペナルティ
+        int predLenPenalty = 300;
 
         size_t yomiLimit = 200;
         size_t finalLimit = 200;
@@ -1134,6 +1167,14 @@ int main(int argc, char **argv)
                 showOmit = true;
                 continue;
             }
+
+            // 追加
+            if (a == "--pred_len_penalty" && i + 1 < argc)
+            {
+                predLenPenalty = std::stoi(argv[++i]);
+                continue;
+            }
+
             if (a == "--yomi_n" && i + 1 < argc)
             {
                 yomiLimit = static_cast<size_t>(std::stoul(argv[++i]));
@@ -1166,6 +1207,9 @@ int main(int argc, char **argv)
             return 2;
         }
 
+        if (predLenPenalty < 0)
+            predLenPenalty = 0;
+
         const kk::YomiSearchMode yomiMode = parse_yomi_mode(yomi_mode_str);
 
         // load resources
@@ -1187,6 +1231,7 @@ int main(int argc, char **argv)
                 q, nBest, beamWidth, showBunsetsu,
                 yomiMode, predK,
                 showPred, showOmit,
+                predLenPenalty,
                 yomiLimit, finalLimit,
                 dedup, globalDedup);
             return 0;
@@ -1205,6 +1250,7 @@ int main(int argc, char **argv)
                 line, nBest, beamWidth, showBunsetsu,
                 yomiMode, predK,
                 showPred, showOmit,
+                predLenPenalty,
                 yomiLimit, finalLimit,
                 dedup, globalDedup);
         }
