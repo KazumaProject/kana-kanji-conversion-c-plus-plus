@@ -762,54 +762,96 @@ struct CandidateClassCache {
 static std::mutex g_cls_mu;
 static CandidateClassCache g_cache;
 
+static jclass find_class_checked(JNIEnv *env, const char *name)
+{
+    jclass c = env->FindClass(name);
+    if (!c)
+    {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        throw std::runtime_error(std::string("FindClass failed: ") + name);
+    }
+    return c;
+}
+
+static jfieldID get_field_checked(JNIEnv *env, jclass cls, const char *name, const char *sig)
+{
+    jfieldID f = env->GetFieldID(cls, name, sig);
+    if (!f)
+    {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        throw std::runtime_error(std::string("GetFieldID failed: ") + name + " " + sig);
+    }
+    return f;
+}
+
+static jmethodID get_method_checked(JNIEnv *env, jclass cls, const char *name, const char *sig)
+{
+    jmethodID m = env->GetMethodID(cls, name, sig);
+    if (!m)
+    {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        throw std::runtime_error(std::string("GetMethodID failed: ") + name + " " + sig);
+    }
+    return m;
+}
+
 static void ensure_candidate_class(JNIEnv *env)
 {
     std::lock_guard<std::mutex> lock(g_cls_mu);
     if (g_cache.ready) return;
 
-    // Kotlin: package com.kazumaproject.kana_kanji_converter_binding
-    jclass local = env->FindClass("com/kazumaproject/kana_kanji_converter_binding/NativeCandidate");
-    if (!local) throw std::runtime_error("FindClass(NativeCandidate) failed");
+    // Kotlin の実体: package com.kazumaproject.kana_kanji_converter
+    // class NativeCandidate
+    jclass local = find_class_checked(env, "com/kazumaproject/kana_kanji_converter/NativeCandidate");
 
-    // Promote to global ref so it remains valid across calls
     g_cache.cls = static_cast<jclass>(env->NewGlobalRef(local));
     env->DeleteLocalRef(local);
-    if (!g_cache.cls) throw std::runtime_error("NewGlobalRef(NativeCandidate) failed");
-
-    g_cache.ctor = env->GetMethodID(g_cache.cls, "<init>", "()V");
-    if (!g_cache.ctor) throw std::runtime_error("GetMethodID(NativeCandidate.<init>) failed");
-
-    g_cache.surface = env->GetFieldID(g_cache.cls, "surface", "Ljava/lang/String;");
-    g_cache.yomi    = env->GetFieldID(g_cache.cls, "yomi", "Ljava/lang/String;");
-    g_cache.score   = env->GetFieldID(g_cache.cls, "score", "I");
-    g_cache.src     = env->GetFieldID(g_cache.cls, "src", "Ljava/lang/String;");
-    g_cache.type    = env->GetFieldID(g_cache.cls, "type", "I");
-    g_cache.hasLR   = env->GetFieldID(g_cache.cls, "hasLR", "Z");
-    g_cache.l       = env->GetFieldID(g_cache.cls, "l", "I");
-    g_cache.r       = env->GetFieldID(g_cache.cls, "r", "I");
-
-    if (!g_cache.surface || !g_cache.yomi || !g_cache.score || !g_cache.src ||
-        !g_cache.type || !g_cache.hasLR || !g_cache.l || !g_cache.r)
+    if (!g_cache.cls)
     {
-        throw std::runtime_error("GetFieldID(NativeCandidate fields) failed");
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        throw std::runtime_error("NewGlobalRef(NativeCandidate) failed");
     }
+
+    g_cache.ctor = get_method_checked(env, g_cache.cls, "<init>", "()V");
+
+    g_cache.surface = get_field_checked(env, g_cache.cls, "surface", "Ljava/lang/String;");
+    g_cache.yomi    = get_field_checked(env, g_cache.cls, "yomi", "Ljava/lang/String;");
+    g_cache.score   = get_field_checked(env, g_cache.cls, "score", "I");
+    g_cache.src     = get_field_checked(env, g_cache.cls, "src", "Ljava/lang/String;");
+    g_cache.type    = get_field_checked(env, g_cache.cls, "type", "I");
+    g_cache.hasLR   = get_field_checked(env, g_cache.cls, "hasLR", "Z");
+    g_cache.l       = get_field_checked(env, g_cache.cls, "l", "I");
+    g_cache.r       = get_field_checked(env, g_cache.cls, "r", "I");
 
     g_cache.ready = true;
 }
 
 static jstring new_jstring_utf8(JNIEnv *env, const std::string &s)
 {
-    return env->NewStringUTF(s.c_str());
+    jstring js = env->NewStringUTF(s.c_str());
+    if (!js)
+    {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        throw std::runtime_error("NewStringUTF failed");
+    }
+    return js;
 }
 
 } // namespace
 
 // ----------------------------------------
 // JNI API
-// Must match Kotlin: com.kazumaproject.kana_kanji_converter_binding.NativeKanaKanji
+// Kotlin 側に合わせる（重要）
+//   package com.kazumaproject.kana_kanji_converter
+//   object NativeKanaKanji
+//
+// よって JNI 名は:
+//   Java_com_kazumaproject_kana_1kanji_1converter_NativeKanaKanji_nativeInit
+//   Java_com_kazumaproject_kana_1kanji_1converter_NativeKanaKanji_nativeConvert
 // ----------------------------------------
+
 extern "C" JNIEXPORT void JNICALL
-Java_com_kazumaproject_kana_1kanji_1converter_1binding_NativeKanaKanji_nativeInit(
+Java_com_kazumaproject_kana_1kanji_1converter_NativeKanaKanji_nativeInit(
     JNIEnv *env,
     jclass,
     jstring yomiTermidPath,
@@ -835,7 +877,7 @@ Java_com_kazumaproject_kana_1kanji_1converter_1binding_NativeKanaKanji_nativeIni
 }
 
 extern "C" JNIEXPORT jobjectArray JNICALL
-Java_com_kazumaproject_kana_1kanji_1converter_1binding_NativeKanaKanji_nativeConvert(
+Java_com_kazumaproject_kana_1kanji_1converter_NativeKanaKanji_nativeConvert(
     JNIEnv *env,
     jclass,
     jstring queryUtf8,
@@ -875,12 +917,20 @@ Java_com_kazumaproject_kana_1kanji_1converter_1binding_NativeKanaKanji_nativeCon
 
         const jsize n = static_cast<jsize>(rows.size());
         jobjectArray arr = env->NewObjectArray(n, g_cache.cls, nullptr);
-        if (!arr) throw std::runtime_error("NewObjectArray failed");
+        if (!arr)
+        {
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            throw std::runtime_error("NewObjectArray failed");
+        }
 
         for (jsize i = 0; i < n; ++i)
         {
             jobject obj = env->NewObject(g_cache.cls, g_cache.ctor);
-            if (!obj) throw std::runtime_error("NewObject(NativeCandidate) failed");
+            if (!obj)
+            {
+                if (env->ExceptionCheck()) env->ExceptionClear();
+                throw std::runtime_error("NewObject(NativeCandidate) failed");
+            }
 
             std::string surf8, y8;
             if (!u16_to_utf8(rows[i].surface, surf8)) surf8.clear();
