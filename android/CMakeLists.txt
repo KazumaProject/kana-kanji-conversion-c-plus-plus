@@ -91,9 +91,7 @@ target_link_libraries(path_algorithm PUBLIC
 # -----------------------------
 # The Android .so (shared library)
 # -----------------------------
-# SHARED ターゲットは「最低 1つはソースが必要」です。
-# JNI を後で追加するなら、ここに jni ブリッジ cpp を追加してください。
-# いまは "空のエントリ" として android/kana_kanji_entry.cpp を使います。
+# ここに JNI ブリッジを必ず含める（nativeInit/nativeConvert の実装）
 add_library(kana_kanji SHARED
   ${CMAKE_CURRENT_LIST_DIR}/kana_kanji_entry.cpp
 )
@@ -114,6 +112,3 @@ target_link_libraries(kana_kanji PRIVATE
 
 find_library(log-lib log)
 target_link_libraries(kana_kanji PRIVATE ${log-lib})
-
-# Android ログを使う場合のみ有効化（必要になったら外す/入れる）
-# target_link_libraries(kana_kanji PRIVATE log)
