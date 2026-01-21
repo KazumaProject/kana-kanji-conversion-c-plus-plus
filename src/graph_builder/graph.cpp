@@ -281,7 +281,7 @@ namespace kk
                     if (it != replaceCountByYomi.end())
                         replaceCount = it->second;
                 }
-                const int penalty = static_cast<int>(replaceCount) * 500;
+                const int penalty = static_cast<int>(replaceCount) * 1500;
 
                 for (const auto &t : listToken)
                 {
