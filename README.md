@@ -77,6 +77,11 @@ rm -rf build && cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_MOZC_FETC
 > メモ：GCC のバージョン固定（例: `gcc-10`）をしたい場合は、あなたの環境に合わせて
 > `-DCMAKE_C_COMPILER=... -DCMAKE_CXX_COMPILER=...` を追加してください。
 
+例：
+
+```bash
+cmake -S . -B build -DCMAKE_C_COMPILER=gcc-10 -DCMAKE_CXX_COMPILER=g++-10 -DCMAKE_CXX_STANDARD=20
+```
 ---
 
 ## 辞書アーティファクト生成（推奨フロー）
