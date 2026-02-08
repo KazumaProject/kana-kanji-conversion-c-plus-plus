@@ -219,4 +219,29 @@ if(ENABLE_ZENZ)
     ${_LLAMA_LIB_TARGET}
     Threads::Threads
   )
+
+  # ==========================================================
+  # NEW: Fused CLI (A* + Zenz in parallel, prepend Zenz result)
+  # ==========================================================
+  add_executable(astar_zenz_fuse_cli
+    cli/kana_kanji/astar_zenz_fuse_cli.cpp
+  )
+
+  target_compile_features(astar_zenz_fuse_cli PRIVATE cxx_std_20)
+
+  # llama.h include
+  target_include_directories(astar_zenz_fuse_cli PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/include
+  )
+
+  # Link: same as astar_bunsetsu_cli + llama + pthread
+  target_link_libraries(astar_zenz_fuse_cli PRIVATE
+    louds_utf16
+    token_array
+    connection_id
+    graph_builder
+    path_algorithm
+    ${_LLAMA_LIB_TARGET}
+    Threads::Threads
+  )
 endif()
