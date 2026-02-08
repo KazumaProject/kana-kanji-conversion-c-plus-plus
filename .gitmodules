@@ -1,0 +1,3 @@
+[submodule "AJIMEE-Bench"]
+	path = AJIMEE-Bench
+	url = https://github.com/azooKey/AJIMEE-Bench.git
