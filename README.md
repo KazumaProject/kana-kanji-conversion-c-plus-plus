@@ -57,10 +57,20 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
+#### (C) zenz のビルド
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DENABLE_ZENZ=ON
+cmake --build build -j
+```
+
 #### 再ビルド
 
 ```bash
-rm -rf build && cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_MOZC_FETCH=ON && cmake --build build -j
+rm -rf build && cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_MOZC_FETCH=ON -DENABLE_ZENZ=ON && cmake --build build -j
+
+
+rm -rf build && cmake -S . -B build -DCMAKE_C_COMPILER=gcc-10 -DCMAKE_CXX_COMPILER=g++-10 -DCMAKE_CXX_STANDARD=20 -DBUILD_MOZC_FETCH=ON -DENABLE_ZENZ=ON && cmake --build build -j
 ```
 
 生成される主なバイナリ：

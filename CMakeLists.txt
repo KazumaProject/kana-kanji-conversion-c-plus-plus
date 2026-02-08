@@ -153,3 +153,70 @@ target_link_libraries(astar_bunsetsu_cli PRIVATE
   graph_builder
   path_algorithm
 )
+
+# -----------------------------
+# Zenz / llama.cpp (NEW)
+# -----------------------------
+option(ENABLE_ZENZ "Build zenz_convert_cli (llama.cpp)" ON)
+
+if(ENABLE_ZENZ)
+  # Reduce build time/noise
+  set(LLAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(LLAMA_BUILD_SERVER OFF CACHE BOOL "" FORCE)
+
+  add_subdirectory(third_party/llama.cpp EXCLUDE_FROM_ALL)
+
+  # ---- Fix: build llama.cpp targets with C++17 to avoid char8_t issues on g++-10 ----
+  # (C++20 makes u8"" -> char8_t*, but this llama.cpp revision assumes const char*)
+  foreach(tgt
+      llama
+      llama_static
+      llama-lib
+      ggml
+      ggml-base
+      ggml-cpu
+      ggml-cuda
+      ggml-metal
+      ggml-vulkan
+      common
+      llava
+  )
+    if(TARGET ${tgt})
+      set_target_properties(${tgt} PROPERTIES
+        CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED YES
+        CXX_EXTENSIONS OFF
+      )
+    endif()
+  endforeach()
+
+  # pick llama library target name
+  set(_LLAMA_LIB_TARGET "")
+  if(TARGET llama)
+    set(_LLAMA_LIB_TARGET llama)
+  elseif(TARGET llama_static)
+    set(_LLAMA_LIB_TARGET llama_static)
+  elseif(TARGET llama-lib)
+    set(_LLAMA_LIB_TARGET llama-lib)
+  endif()
+
+  if(_LLAMA_LIB_TARGET STREQUAL "")
+    message(FATAL_ERROR "ENABLE_ZENZ is ON but no llama target was found after add_subdirectory(third_party/llama.cpp).")
+  endif()
+
+  add_executable(zenz_convert_cli
+    cli/zenz/zenz_convert_cli.cpp
+  )
+
+  target_compile_features(zenz_convert_cli PRIVATE cxx_std_20)
+
+  target_include_directories(zenz_convert_cli PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/include
+  )
+
+  target_link_libraries(zenz_convert_cli PRIVATE
+    ${_LLAMA_LIB_TARGET}
+    Threads::Threads
+  )
+endif()
