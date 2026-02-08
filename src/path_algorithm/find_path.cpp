@@ -272,6 +272,18 @@ namespace kk
         return out;
     }
 
+    static std::u16string buildYomiFromBosState(const std::shared_ptr<State> &bosState)
+    {
+        std::u16string out;
+        auto cur = bosState->next; // BOS -> first token
+        while (cur && cur->node->tango != u"EOS")
+        {
+            out += cur->node->yomi;
+            cur = cur->next;
+        }
+        return out;
+    }
+
     std::vector<int> FindPath::getBunsetsuPositionsFromPath(const std::shared_ptr<State> &bosState)
     {
         std::vector<int> positions;
@@ -332,6 +344,7 @@ namespace kk
             if (curNode->tango == u"BOS")
             {
                 const std::u16string s = buildStringFromBosState(cur);
+                const std::u16string y = buildYomiFromBosState(cur);
 
                 if (seen.insert(s).second)
                 {
@@ -340,6 +353,7 @@ namespace kk
 
                     Candidate c;
                     c.string = s;
+                    c.yomi = y;
                     c.type = isAllFullWidthNumericSymbol(s) ? 30 : (isAllHalfWidthNumericSymbol(s) ? 31 : 1);
 
                     const int lenClamped = (length < 0) ? 0 : (length > 255 ? 255 : length);

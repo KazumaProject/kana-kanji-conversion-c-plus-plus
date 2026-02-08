@@ -17,11 +17,13 @@
 #include <future>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <numeric>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 #include <thread>
@@ -167,7 +169,7 @@ static int utf8_codepoint_len(std::string_view s) {
     while (i < s.size()) {
         size_t prev = i;
         if (!utf8_next_codepoint(s, i, cp)) {
-            i = prev + 1; // advance 1 byte on invalid
+            i = prev + 1;
         }
         n++;
     }
@@ -175,7 +177,7 @@ static int utf8_codepoint_len(std::string_view s) {
 }
 
 // ============================================================
-// Yomi mode (same strings as astar_bunsetsu_cli.cpp)
+// Yomi mode
 // ============================================================
 static kk::YomiSearchMode parse_yomi_mode(const std::string &s) {
     if (s == "cps")      return kk::YomiSearchMode::CommonPrefixOnly;
@@ -526,12 +528,12 @@ struct EvalResult {
     std::string whole_result_utf8;      // WHOLE
 };
 
-// NOTE: safer version using llama_get_logits_ith(ctx, slice_idx)
+// safer version using llama_get_logits_ith(ctx, slice_idx)
 static EvalResult evaluate_candidate_core(
     llama_context * ctx,
     const llama_vocab * vocab,
     const std::vector<llama_token> & prompt_tokens,
-    const std::string & candidate_text_utf8,  // preprocess_text 済み推奨
+    const std::string & candidate_text_utf8,
     KvState & kv,
     llama_seq_id seq_id = 0,
     bool verbose = false
@@ -554,7 +556,6 @@ static EvalResult evaluate_candidate_core(
     const int startOffset = (int)prompt_tokens.size() - 1;
     if (startOffset < 0) return r;
 
-    // decode once (logits requested from startOffset)
     const float * dummy = get_logits_kv(ctx, seq_id, tokens, startOffset, kv);
     if (!dummy) return r;
 
@@ -657,8 +658,8 @@ public:
     struct EvalOut {
         EvalKind kind = EvalKind::Error;
         float pass_score = 0.0f;
-        int fix_prefix_len = 0;          // UTF-8 codepoint length
-        std::string fix_prefix_utf8;     // debug/optional
+        int fix_prefix_len = 0;
+        std::string fix_prefix_utf8;
     };
 
     explicit ZenzRunner(const Options & opt) : opt_(opt) {
@@ -725,7 +726,6 @@ public:
         const std::vector<llama_token> prompt_tokens = tokenize(vocab_, prompt, true, false);
         if (prompt_tokens.empty()) return {};
 
-        // reset kv each call
         llama_kv_cache_seq_rm(ctx_, /*seq_id*/ 0, 0, -1);
         kv_.prev_tokens.clear();
 
@@ -765,7 +765,6 @@ public:
         for (const auto & cand_raw : candidates_utf8) {
             const std::string cand_pp = preprocess_text(cand_raw);
 
-            // safer: reset kv per candidate (correctness first)
             llama_kv_cache_seq_rm(ctx_, /*seq_id*/ 0, 0, -1);
             kv_.prev_tokens.clear();
 
@@ -806,6 +805,7 @@ private:
 // ============================================================
 struct OutCand {
     std::string text_utf8;
+    std::string yomi_utf8;
     int score = 0;
     int type = 0;
     bool hasLR = false;
@@ -847,6 +847,7 @@ static void usage(const char * argv0) {
         << "      [--yomi_mode cps|cps_pred|cps_omit|all] [--pred_k K]\n"
         << "      [--zenz_mode off|gen|eval|gen_eval]   (default: gen)\n"
         << "      [--zenz_show_eval]                   (append eval info per line)\n"
+        << "      [--show_yomi]                        (append yomi=... per line)\n"
         << "      [--zenz_max_new 64] [--zenz_min_len 1]\n"
         << "      [--zenz_left \"...\"] [--zenz_profile \"...\"] [--zenz_topic \"...\"] [--zenz_style \"...\"] [--zenz_preference \"...\"]\n"
         << "      [--zenz_n_ctx 512] [--zenz_n_batch 512] [--zenz_threads N]\n"
@@ -860,6 +861,7 @@ static void usage(const char * argv0) {
         << "                           * if any PASS -> move best PASS (max score) to top\n"
         << "                           * else        -> stable sort by FIX prefix length desc\n"
         << "  - --zenz_mode gen_eval : apply gen, then eval-sort including gen output.\n"
+        << "                           NOTE: only in gen_eval, Zenz gen query uses A* top-1 yomi (omit-aware).\n"
         << "  - --zenz_mode off      : disable Zenz completely (A* only).\n";
 }
 
@@ -882,6 +884,7 @@ static void run_one_fused(
     int predK,
     ZenzMode zenzMode,
     bool zenzShowEval,
+    bool showYomi,
     bool verbose
 ) {
     std::u16string q16;
@@ -890,17 +893,19 @@ static void run_one_fused(
         return;
     }
 
-    // Start Zenz generate in parallel (only for gen/gen_eval)
+    // IMPORTANT:
+    // - zenz_mode=gen      : keep old behavior (parallel gen using --q)
+    // - zenz_mode=gen_eval : DO NOT run gen early. After A*, use top-1 yomi (omit-aware) as Zenz gen query.
     std::future<std::string> fut_zenz;
     const bool need_gen = (zenzMode == ZenzMode::Gen || zenzMode == ZenzMode::GenEval);
-    if (need_gen) {
+    if (need_gen && zenzMode == ZenzMode::Gen) {
         if (!zenz) die("internal: zenzMode requires zenz runner but zenz is null");
         fut_zenz = std::async(std::launch::async, [&]() -> std::string {
-            return zenz->generate(q_utf8);
+            return zenz->generate(q_utf8); // gen uses original query
         });
     }
 
-    // A* graph + search (main thread)
+    // A* graph + search
     kk::Graph graph = kk::GraphBuilder::constructGraph(
         q16, yomiCps, yomiTerm, tokens, pos, tango, yomiMode, predK
     );
@@ -920,9 +925,12 @@ static void run_one_fused(
     for (size_t i = 0; i < cands.size(); ++i) {
         std::string s8;
         if (!u16_to_utf8(cands[i].string, s8)) s8 = "<BAD_U16>";
+        std::string y8;
+        if (!u16_to_utf8(cands[i].yomi, y8)) y8 = "<BAD_U16>";
 
         OutCand oc;
         oc.text_utf8 = std::move(s8);
+        oc.yomi_utf8 = std::move(y8);
         oc.score = cands[i].score;
         oc.type  = static_cast<int>(cands[i].type);
         oc.hasLR = cands[i].hasLR;
@@ -935,11 +943,27 @@ static void run_one_fused(
 
     // Apply Zenz generate prepend/move-to-front
     std::string zenz_out;
+    std::string zenz_query_yomi = q_utf8;
+
     if (need_gen) {
-        try {
-            zenz_out = fut_zenz.get();
-        } catch (...) {
-            zenz_out.clear();
+        if (!zenz) die("internal: zenzMode requires zenz runner but zenz is null");
+
+        if (zenzMode == ZenzMode::GenEval) {
+            // gen_eval ONLY: use A* top-1 yomi (omit-aware) as Zenz gen query
+            if (!out.empty() && !out[0].yomi_utf8.empty() && out[0].yomi_utf8 != "<BAD_U16>") {
+                zenz_query_yomi = out[0].yomi_utf8;
+            } else {
+                zenz_query_yomi = q_utf8;
+            }
+            zenz_out = zenz->generate(zenz_query_yomi);
+        } else {
+            // gen: old behavior (parallel already running with q_utf8)
+            try {
+                zenz_out = fut_zenz.get();
+            } catch (...) {
+                zenz_out.clear();
+            }
+            zenz_query_yomi = q_utf8;
         }
 
         if (!zenz_out.empty()) {
@@ -956,11 +980,14 @@ static void run_one_fused(
             if (it != out.end()) {
                 OutCand tmp = *it;
                 tmp.isZenz = true;
+                // yomi should reflect the query used for generation
+                tmp.yomi_utf8 = zenz_query_yomi;
                 out.erase(it);
                 out.insert(out.begin(), std::move(tmp));
             } else {
                 OutCand z;
                 z.text_utf8 = zenz_out;
+                z.yomi_utf8 = zenz_query_yomi;   // FIX: reflect gen query (omit-aware in gen_eval)
                 z.score = -1;
                 z.type = 99;
                 z.hasLR = false;
@@ -975,11 +1002,25 @@ static void run_one_fused(
     if (zenzMode == ZenzMode::Eval || zenzMode == ZenzMode::GenEval) {
         if (!zenz) die("internal: zenzMode requires zenz runner but zenz is null");
 
-        std::vector<std::string> texts;
-        texts.reserve(out.size());
-        for (auto & oc : out) texts.push_back(oc.text_utf8);
-
-        evals = zenz->eval_candidates(q_utf8, texts);
+        evals.assign(out.size(), {});
+        std::unordered_map<std::string, std::vector<size_t>> groups;
+        groups.reserve(out.size());
+        for (size_t i = 0; i < out.size(); ++i) {
+            groups[out[i].yomi_utf8].push_back(i);
+        }
+        for (auto & kv : groups) {
+            const std::string & yomi8 = kv.first;
+            const std::vector<size_t> & idxs = kv.second;
+            std::vector<std::string> texts;
+            texts.reserve(idxs.size());
+            for (size_t idx : idxs) texts.push_back(out[idx].text_utf8);
+            auto sub = zenz->eval_candidates(yomi8, texts);
+            if (sub.size() == idxs.size()) {
+                for (size_t j = 0; j < idxs.size(); ++j) evals[idxs[j]] = sub[j];
+            } else {
+                for (size_t idx : idxs) evals[idx].kind = EvalKind::Error;
+            }
+        }
 
         int best_pass = -1;
         float best_score = -std::numeric_limits<float>::infinity();
@@ -995,21 +1036,16 @@ static void run_one_fused(
         }
 
         if (best_pass >= 0) {
-            // PASS exists -> move best PASS to front
             OutCand top = out[(size_t)best_pass];
             out.erase(out.begin() + best_pass);
             out.insert(out.begin(), std::move(top));
 
-            // keep evals aligned if we will print them
-            if (zenzShowEval && evals.size() == out.size() + 1) {
-                // impossible; ignore
-            } else if (zenzShowEval && evals.size() == out.size()) {
+            if (zenzShowEval && evals.size() == out.size()) {
                 auto e0 = evals[(size_t)best_pass];
                 evals.erase(evals.begin() + best_pass);
                 evals.insert(evals.begin(), std::move(e0));
             }
         } else if (evals.size() == out.size()) {
-            // no PASS -> stable sort by FIX prefix len desc
             std::vector<int> idx((int)out.size());
             std::iota(idx.begin(), idx.end(), 0);
 
@@ -1088,11 +1124,18 @@ static void run_one_fused(
             }
         }
 
+        if (showYomi) {
+            std::cout << "\tyomi=" << oc.yomi_utf8;
+        }
+
         std::cout << "\n";
     }
 
     if (verbose && !zenz_out.empty()) {
         std::cerr << "[debug] zenz_out=" << zenz_out << "\n";
+        if (need_gen) {
+            std::cerr << "[debug] zenz_query_yomi=" << zenz_query_yomi << "\n";
+        }
     }
 }
 
@@ -1131,9 +1174,9 @@ int main(int argc, char ** argv) {
         zopt.min_len = 1;
         zopt.verbose = false;
 
-        // new zenz behavior
         ZenzMode zenzMode = ZenzMode::Gen;
         bool zenzShowEval = false;
+        bool showYomi = false;
 
         for (int i = 1; i < argc; ++i) {
             const std::string a = argv[i];
@@ -1169,6 +1212,7 @@ int main(int argc, char ** argv) {
             // Zenz behavior
             if (a == "--zenz_mode") { zenzMode = parse_zenz_mode(need("--zenz_mode")); continue; }
             if (a == "--zenz_show_eval") { zenzShowEval = true; continue; }
+            if (a == "--show_yomi")      { showYomi = true; continue; }
 
             // Zenz model
             if (a == "--zenz_model") { zopt.model_path = need("--zenz_model"); continue; }
@@ -1239,6 +1283,7 @@ int main(int argc, char ** argv) {
                 yomiMode, predK,
                 zenzMode,
                 zenzShowEval,
+                showYomi,
                 verbose
             );
             return 0;
@@ -1257,6 +1302,7 @@ int main(int argc, char ** argv) {
                 yomiMode, predK,
                 zenzMode,
                 zenzShowEval,
+                showYomi,
                 verbose
             );
         }
