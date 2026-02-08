@@ -806,6 +806,7 @@ private:
 // ============================================================
 struct OutCand {
     std::string text_utf8;
+    std::string yomi_utf8; // reading (hiragana); may differ from original query when omit/rewrite is used
     int score = 0;
     int type = 0;
     bool hasLR = false;
@@ -847,6 +848,7 @@ static void usage(const char * argv0) {
         << "      [--yomi_mode cps|cps_pred|cps_omit|all] [--pred_k K]\n"
         << "      [--zenz_mode off|gen|eval|gen_eval]   (default: gen)\n"
         << "      [--zenz_show_eval]                   (append eval info per line)\n"
+        << "      [--show_yomi]                        (append yomi=... per line)\n"
         << "      [--zenz_max_new 64] [--zenz_min_len 1]\n"
         << "      [--zenz_left \"...\"] [--zenz_profile \"...\"] [--zenz_topic \"...\"] [--zenz_style \"...\"] [--zenz_preference \"...\"]\n"
         << "      [--zenz_n_ctx 512] [--zenz_n_batch 512] [--zenz_threads N]\n"
@@ -882,6 +884,7 @@ static void run_one_fused(
     int predK,
     ZenzMode zenzMode,
     bool zenzShowEval,
+    bool showYomi,
     bool verbose
 ) {
     std::u16string q16;
@@ -920,9 +923,12 @@ static void run_one_fused(
     for (size_t i = 0; i < cands.size(); ++i) {
         std::string s8;
         if (!u16_to_utf8(cands[i].string, s8)) s8 = "<BAD_U16>";
+        std::string y8;
+        if (!u16_to_utf8(cands[i].yomi, y8)) y8 = "<BAD_U16>";
 
         OutCand oc;
         oc.text_utf8 = std::move(s8);
+        oc.yomi_utf8 = std::move(y8);
         oc.score = cands[i].score;
         oc.type  = static_cast<int>(cands[i].type);
         oc.hasLR = cands[i].hasLR;
@@ -961,6 +967,7 @@ static void run_one_fused(
             } else {
                 OutCand z;
                 z.text_utf8 = zenz_out;
+                z.yomi_utf8 = q_utf8;
                 z.score = -1;
                 z.type = 99;
                 z.hasLR = false;
@@ -975,11 +982,30 @@ static void run_one_fused(
     if (zenzMode == ZenzMode::Eval || zenzMode == ZenzMode::GenEval) {
         if (!zenz) die("internal: zenzMode requires zenz runner but zenz is null");
 
-        std::vector<std::string> texts;
-        texts.reserve(out.size());
-        for (auto & oc : out) texts.push_back(oc.text_utf8);
-
-        evals = zenz->eval_candidates(q_utf8, texts);
+        // Candidates may have different readings when omit/rewrite is enabled.
+        // Group by reading so we can still use the batch evaluator when possible.
+        evals.assign(out.size(), {});
+        std::unordered_map<std::string, std::vector<size_t>> groups;
+        groups.reserve(out.size());
+        for (size_t i = 0; i < out.size(); ++i) {
+            groups[out[i].yomi_utf8].push_back(i);
+        }
+        for (auto & kv : groups) {
+            const std::string & yomi8 = kv.first;
+            const std::vector<size_t> & idxs = kv.second;
+            std::vector<std::string> texts;
+            texts.reserve(idxs.size());
+            for (size_t idx : idxs) texts.push_back(out[idx].text_utf8);
+            auto sub = zenz->eval_candidates(yomi8, texts);
+            if (sub.size() == idxs.size()) {
+                for (size_t j = 0; j < idxs.size(); ++j) evals[idxs[j]] = sub[j];
+            } else {
+                // Defensive: mark as error if sizes do not match.
+                for (size_t idx : idxs) {
+                    evals[idx].kind = EvalKind::Error;
+                }
+            }
+        }
 
         int best_pass = -1;
         float best_score = -std::numeric_limits<float>::infinity();
@@ -1088,6 +1114,10 @@ static void run_one_fused(
             }
         }
 
+        if (showYomi) {
+            std::cout << "	yomi=" << oc.yomi_utf8;
+        }
+
         std::cout << "\n";
     }
 
@@ -1134,6 +1164,7 @@ int main(int argc, char ** argv) {
         // new zenz behavior
         ZenzMode zenzMode = ZenzMode::Gen;
         bool zenzShowEval = false;
+    bool showYomi = false;
 
         for (int i = 1; i < argc; ++i) {
             const std::string a = argv[i];
@@ -1169,6 +1200,7 @@ int main(int argc, char ** argv) {
             // Zenz behavior
             if (a == "--zenz_mode") { zenzMode = parse_zenz_mode(need("--zenz_mode")); continue; }
             if (a == "--zenz_show_eval") { zenzShowEval = true; continue; }
+            if (a == "--show_yomi")      { showYomi = true; continue; }
 
             // Zenz model
             if (a == "--zenz_model") { zopt.model_path = need("--zenz_model"); continue; }
@@ -1239,6 +1271,7 @@ int main(int argc, char ** argv) {
                 yomiMode, predK,
                 zenzMode,
                 zenzShowEval,
+                showYomi,
                 verbose
             );
             return 0;
@@ -1257,6 +1290,7 @@ int main(int argc, char ** argv) {
                 yomiMode, predK,
                 zenzMode,
                 zenzShowEval,
+                showYomi,
                 verbose
             );
         }

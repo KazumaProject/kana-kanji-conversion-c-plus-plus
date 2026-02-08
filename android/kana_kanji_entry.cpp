@@ -482,6 +482,7 @@ static GraphResult run_graph_astar(
         CandidateRow row;
         row.source = sourceName;
         row.surface = c.string;
+        row.yomi = c.yomi;
         row.score = c.score;
         row.type = static_cast<int>(c.type);
         row.hasLR = c.hasLR;

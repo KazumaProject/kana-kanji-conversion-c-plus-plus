@@ -56,7 +56,7 @@ namespace kk
     // Node
     // -----------------------------
     Node::Node()
-        : l(0), r(0), score(0), f(0), g(0), tango(), len(0), sPos(0), prev(nullptr)
+        : l(0), r(0), score(0), f(0), g(0), tango(), yomi(), len(0), sPos(0), prev(nullptr)
     {
     }
 
@@ -66,6 +66,7 @@ namespace kk
                int f_,
                int g_,
                std::u16string tango_,
+               std::u16string yomi_,
                int16_t len_,
                int sPos_)
         : l(l_),
@@ -74,6 +75,7 @@ namespace kk
           f(f_),
           g(g_),
           tango(std::move(tango_)),
+          yomi(std::move(yomi_)),
           len(len_),
           sPos(sPos_),
           prev(nullptr)
@@ -110,6 +112,7 @@ namespace kk
             /*f=*/0,
             /*g=*/0,
             /*tango=*/u"BOS",
+            /*yomi=*/u"",
             /*len=*/0,
             /*sPos=*/0);
     }
@@ -123,6 +126,7 @@ namespace kk
             /*f=*/0,
             /*g=*/0,
             /*tango=*/u"EOS",
+            /*yomi=*/u"",
             /*len=*/0,
             /*sPos=*/eosPos);
     }
@@ -145,7 +149,8 @@ namespace kk
                                      {
                                          return (n.l == newNode.l) &&
                                                 (n.r == newNode.r) &&
-                                                (n.tango == newNode.tango);
+                                                (n.tango == newNode.tango) &&
+                                                (n.yomi == newNode.yomi);
                                      });
 
         if (it != nodes.end())
@@ -311,6 +316,7 @@ namespace kk
                         /*f=*/cost,
                         /*g=*/cost,
                         /*tango=*/std::move(surface),
+                        /*yomi=*/yomiStr,
                         /*len=*/static_cast<int16_t>(yomiStr.size()),
                         /*sPos=*/i);
 
@@ -331,6 +337,7 @@ namespace kk
                     /*f=*/10000,
                     /*g=*/10000,
                     /*tango=*/yomi1,
+                    /*yomi=*/yomi1,
                     /*len=*/1,
                     /*sPos=*/i);
 

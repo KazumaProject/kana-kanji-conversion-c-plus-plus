@@ -15,6 +15,7 @@ namespace kk
     struct Candidate
     {
         std::u16string string;
+        std::u16string yomi; // reading (hiragana) for this candidate
         std::uint8_t type;   // 1: normal, 30: fullwidth numeric/symbol, 31: halfwidth numeric/symbol
         std::uint8_t length; // input length (clamped to 0..255)
         int score;           // total cost

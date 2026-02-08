@@ -36,6 +36,7 @@ namespace kk
         int f;     // forward DP: best cost from BOS to this node
         int g;     // backward A*: cost from this node to EOS (accumulated)
         std::u16string tango;
+        std::u16string yomi; // reading (hiragana) for this node (may differ from input substring when omit/rewrite is used)
         int16_t len; // reading length
         int sPos;    // start position in input
 
@@ -49,6 +50,7 @@ namespace kk
              int f_,
              int g_,
              std::u16string tango_,
+             std::u16string yomi_,
              int16_t len_,
              int sPos_);
     };
