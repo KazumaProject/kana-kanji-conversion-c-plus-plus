@@ -76,3 +76,5 @@ Thumbs.db
 
 src/dictionary_builder/mozc_fetch/dictionary*.txt
 src/dictionary_builder/mozc_fetch/connection_single_column.txt
+
+failed_*.jsonl
