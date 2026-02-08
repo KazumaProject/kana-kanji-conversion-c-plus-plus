@@ -57,10 +57,20 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
+#### (C) zenz のビルド
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DENABLE_ZENZ=ON
+cmake --build build -j
+```
+
 #### 再ビルド
 
 ```bash
-rm -rf build && cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_MOZC_FETCH=ON && cmake --build build -j
+rm -rf build && cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_MOZC_FETCH=ON -DENABLE_ZENZ=ON && cmake --build build -j
+
+
+rm -rf build && cmake -S . -B build -DCMAKE_C_COMPILER=gcc-10 -DCMAKE_CXX_COMPILER=g++-10 -DCMAKE_CXX_STANDARD=20 -DBUILD_MOZC_FETCH=ON -DENABLE_ZENZ=ON && cmake --build build -j
 ```
 
 生成される主なバイナリ：
@@ -169,6 +179,21 @@ echo "きょうはいいてんきです" | ./build/prefix_predict_cli --yomi_ter
 
 * `prefix_predict_cli` は現状「挙動確認・デバッグ向け」に詳細ログを出力します。
 * `--no_dedup` を付けると、同一文字列候補の重複排除を無効化できます。
+
+### zenz
+
+```bash
+
+./build/zenz_convert_cli --model ./models/zenz/zenz-v3.1-small.gguf --q "わたしのなまえはなかのです" --max_new 64 --verbose
+
+./build/zenz_convert_cli --model ./models/zenz/zenz-v3.1-small.gguf --mode eval --input "わたしのなまえはなかのです" --candidate "私の名前は中野です" --candidate "わたしのなまえはかのです" --candidate "私の名前はなかのです" --n_ctx 512 --n_batch 512 --verbose
+
+# 既存の変換候補に zenz の変換候補を追加する
+./build/astar_zenz_fuse_cli --yomi_termid ./build/yomi_termid.louds --tango ./build/tango.louds --tokens ./build/token_array.bin --pos_table ./build/pos_table.bin --conn ./build/connection_single_column.bin --zenz_model ./models/zenz/zenz-v3.1-small.gguf --q "きょうのてんき" --n 10 --beam 50 --show_bunsetsu 2>/dev/null
+
+./build/astar_zenz_fuse_cli --yomi_termid ./build/yomi_termid.louds --tango ./build/tango.louds --tokens ./build/token_array.bin --pos_table ./build/pos_table.bin --conn ./build/connection_single_column.bin --zenz_model ./models/zenz/zenz-v3.1-small.gguf --q "わたしのなまえはなかのです" --zenz_mode eval --zenz_show_eval --verbose 2>/dev/null
+
+```
 
 ---
 
