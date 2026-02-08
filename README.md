@@ -42,8 +42,21 @@ sudo apt-get install -y build-essential cmake libcurl4-openssl-dev zlib1g-dev
 ### 2) ビルド
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+## mozc の辞書をダウンロードするバイナリの作成
+cmake -S . -B build -DCMAKE_C_COMPILER=gcc-10 -DCMAKE_CXX_COMPILER=g++-10 -DCMAKE_CXX_STANDARD=20 -DBUILD_MOZC_FETCH=ON 
+
+## mozc の辞書をダウンロードするバイナリは作成しない
+cmake -S . -B build -DCMAKE_C_COMPILER=gcc-10 -DCMAKE_CXX_COMPILER=g++-10 -DCMAKE_CXX_STANDARD=20
+
+##  ビルド
 cmake --build build -j
+
+## 再ビルド
+rm -rf build && cmake -S . -B build -DCMAKE_C_COMPILER=gcc-10 -DCMAKE_CXX_COMPILER=g++-10 -DCMAKE_CXX_STANDARD=20 && cmake --build build -j
+
+## 再ビルド
+rm -rf build && cmake -S . -B build -DCMAKE_C_COMPILER=gcc-10 -DCMAKE_CXX_COMPILER=g++-10 -DCMAKE_CXX_STANDARD=20 -DBUILD_MOZC_FETCH=ON  && cmake --build build -j
+
 ```
 
 生成される主なバイナリ：

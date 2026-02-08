@@ -20,6 +20,11 @@ if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
+# -----------------------------
+# Threads (pthread)
+# -----------------------------
+find_package(Threads REQUIRED)
+
 # ---- mozc fetch tool ----
 option(BUILD_MOZC_FETCH "Build mozc_dic_fetch (requires a fully linkable libcurl)" OFF)
 if(BUILD_MOZC_FETCH)
@@ -136,6 +141,7 @@ target_link_libraries(astar_bunsetsu_parallel_cli PRIVATE
   connection_id
   graph_builder
   path_algorithm
+  Threads::Threads
 )
 
 # N-best kana-kanji conversion CLI (NEW)
