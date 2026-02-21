@@ -192,7 +192,8 @@ namespace kk
         const PosTable &pos,
         const LOUDSReaderUtf16 &tango,
         YomiSearchMode mode,
-        int predictivePrefixLen)
+        int predictivePrefixLen,
+        TypoOptions typo)
     {
         const int n = static_cast<int>(str.size());
 
@@ -211,18 +212,17 @@ namespace kk
             bool foundInAnyDictionary = false;
 
             // 集約（重複排除）:
-            // yomiHits: 処理対象のユニーク yomi
-            // replaceCountByYomi: その yomi が omission 由来なら置換数（最小）を保持
             std::vector<std::u16string> yomiHits;
             yomiHits.reserve(256);
 
             std::unordered_set<std::u16string, U16Hash> seen;
             seen.reserve(256);
 
-            std::unordered_map<std::u16string, uint16_t, U16Hash> replaceCountByYomi;
-            replaceCountByYomi.reserve(256);
+            // yomi -> penalty (min)
+            std::unordered_map<std::u16string, int, U16Hash> penaltyByYomi;
+            penaltyByYomi.reserve(256);
 
-            // (A) commonPrefixSearch は常に含める（要求仕様に合わせる）
+            // (A) commonPrefixSearch は常に含める
             {
                 const auto cps = yomiCps.commonPrefixSearch(subStr);
                 if (!cps.empty())
@@ -233,12 +233,43 @@ namespace kk
                     if (seen.insert(y).second)
                     {
                         yomiHits.push_back(y);
-                        replaceCountByYomi.emplace(y, static_cast<uint16_t>(0));
                     }
+                    auto itp = penaltyByYomi.find(y);
+                    if (itp == penaltyByYomi.end())
+                        penaltyByYomi.emplace(y, 0);
+                    else
+                        itp->second = std::min(itp->second, 0);
                 }
             }
 
-            // (C) commonPrefixSearchWithOmission（濁点/半濁点/小文字など許容）
+            // (B) predictiveSearch（必要なら）
+            if (mode == YomiSearchMode::CommonPrefixPlusPredictive || mode == YomiSearchMode::All)
+            {
+                // prefix 長を制限して predictive を掛ける例（必要なら調整）
+                const size_t k = static_cast<size_t>(std::min<int>(predictivePrefixLen, (int)subStr.size()));
+                const std::u16string pref = subStr.substr(0, k);
+
+                const auto preds = yomiCps.predictiveSearch(pref);
+                if (!preds.empty())
+                    foundInAnyDictionary = true;
+
+                for (const auto &y : preds)
+                {
+                    if (y.size() > subStr.size())
+                        continue;
+
+                    if (seen.insert(y).second)
+                        yomiHits.push_back(y);
+
+                    auto itp = penaltyByYomi.find(y);
+                    if (itp == penaltyByYomi.end())
+                        penaltyByYomi.emplace(y, 0);
+                    else
+                        itp->second = std::min(itp->second, 0);
+                }
+            }
+
+            // (C) omission（濁点/半濁点/小文字など）
             if (mode == YomiSearchMode::CommonPrefixPlusOmission || mode == YomiSearchMode::All)
             {
                 const auto omits = yomiCps.commonPrefixSearchWithOmission(subStr);
@@ -247,25 +278,42 @@ namespace kk
 
                 for (const auto &r : omits)
                 {
-                    // omission なので subStr と文字が一致しない可能性はあるが、
-                    // 消費長は r.yomi.size() として扱う。
                     if (r.yomi.size() > subStr.size())
                         continue;
 
-                    auto it = replaceCountByYomi.find(r.yomi);
-                    if (it == replaceCountByYomi.end())
-                    {
-                        // 初出
-                        if (seen.insert(r.yomi).second)
-                            yomiHits.push_back(r.yomi);
-                        replaceCountByYomi.emplace(r.yomi, r.replaceCount);
-                    }
+                    if (seen.insert(r.yomi).second)
+                        yomiHits.push_back(r.yomi);
+
+                    const int p = static_cast<int>(r.replaceCount);
+                    auto itp = penaltyByYomi.find(r.yomi);
+                    if (itp == penaltyByYomi.end())
+                        penaltyByYomi.emplace(r.yomi, p);
                     else
-                    {
-                        // 既出なら replaceCount は最小を採用
-                        if (r.replaceCount < it->second)
-                            it->second = r.replaceCount;
-                    }
+                        itp->second = std::min(itp->second, p);
+                }
+            }
+
+            // (D) ★KanaFlick typo
+            if (typo.enable)
+            {
+                const auto ty = yomiCps.commonPrefixSearchWithTypo(subStr, typo.maxPenalty, typo.maxOut);
+                if (!ty.empty())
+                    foundInAnyDictionary = true;
+
+                for (const auto &r : ty)
+                {
+                    if (r.yomi.size() > subStr.size())
+                        continue;
+
+                    if (seen.insert(r.yomi).second)
+                        yomiHits.push_back(r.yomi);
+
+                    const int p = r.penaltyUsed;
+                    auto itp = penaltyByYomi.find(r.yomi);
+                    if (itp == penaltyByYomi.end())
+                        penaltyByYomi.emplace(r.yomi, p);
+                    else
+                        itp->second = std::min(itp->second, p);
                 }
             }
 
@@ -279,14 +327,15 @@ namespace kk
                 const auto listToken = tokens.getTokensForTermId(termId);
                 const int endIndex = i + static_cast<int>(yomiStr.size());
 
-                // ★ omission 由来の置換数ペナルティ: replaceCount * 1000
-                uint16_t replaceCount = 0;
+                int pen = 0;
                 {
-                    auto it = replaceCountByYomi.find(yomiStr);
-                    if (it != replaceCountByYomi.end())
-                        replaceCount = it->second;
+                    auto itp = penaltyByYomi.find(yomiStr);
+                    if (itp != penaltyByYomi.end())
+                        pen = itp->second;
                 }
-                const int penalty = static_cast<int>(replaceCount) * 1500;
+
+                // penalty の係数: typo.weight（typo.disable時でも omission/cps の penalty が入っているなら機能する）
+                const int penaltyCost = pen * typo.weight;
 
                 for (const auto &t : listToken)
                 {
@@ -306,8 +355,7 @@ namespace kk
 
                     const auto [l, r] = pos.getLR(t.posIndex);
 
-                    // ★ ここでノードコストに penalty を加算（graph_omit のスコアへ反映される）
-                    const int cost = static_cast<int>(t.wordCost) + penalty;
+                    const int cost = static_cast<int>(t.wordCost) + penaltyCost;
 
                     Node node(
                         /*l=*/l,

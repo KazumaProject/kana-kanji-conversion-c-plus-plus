@@ -4,6 +4,7 @@
 #include <vector>
 #include <string>
 #include <istream>
+#include <utility>
 
 #include "common/bit_vector_utf16.hpp"
 #include "common/succinct_bit_vector_utf16.hpp"
@@ -14,8 +15,15 @@ public:
     struct OmissionSearchResult
     {
         std::u16string yomi;
-        uint16_t replaceCount = 0;      // 置換が必要だった文字数
-        bool omissionOccurred = false;  // 置換が1回でも発生したか
+        uint16_t replaceCount = 0;     // 置換が必要だった文字数
+        bool omissionOccurred = false; // 置換が1回でも発生したか
+    };
+
+    // ★追加: KanaFlick typo の累積ペナルティ付き結果
+    struct TypoSearchResult
+    {
+        std::u16string yomi;
+        int penaltyUsed = 0; // Kotlin側 TypoCategory.penalty の合計
     };
 
 public:
@@ -30,6 +38,13 @@ public:
 
     // Added
     std::vector<OmissionSearchResult> commonPrefixSearchWithOmission(const std::u16string &str) const;
+
+    // ★追加: 12キー typo を考慮した common prefix search
+    // maxPenalty: 累積ペナルティ上限（例: 2〜3）
+    // maxOut    : 最大返却数（例: 128）
+    std::vector<TypoSearchResult> commonPrefixSearchWithTypo(const std::u16string &str,
+                                                             int maxPenalty,
+                                                             int maxOut) const;
 
     // ルートから nodeIndex までのラベルを復元
     std::u16string getLetter(int nodeIndex) const;
@@ -66,6 +81,10 @@ private:
                                      uint16_t replaceCount,
                                      bool omissionOccurred,
                                      std::vector<OmissionSearchResult> &out) const;
+
+    // ★追加: typo helpers
+    // (置換文字, 追加ペナルティ) の候補を返す
+    static std::vector<std::pair<char16_t, int>> getTypoVariationsKanaFlick(char16_t ch);
 
     static void read_u64(std::istream &is, uint64_t &v);
     static void read_u16(std::istream &is, uint16_t &v);
