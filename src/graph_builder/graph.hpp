@@ -37,8 +37,8 @@ namespace kk
         int g;     // backward A*: cost from this node to EOS (accumulated)
         std::u16string tango;
         std::u16string yomi; // reading (hiragana) for this node (may differ from input substring when omit/rewrite is used)
-        int16_t len; // reading length
-        int sPos;    // start position in input
+        int16_t len;         // reading length
+        int sPos;            // start position in input
 
         // forward best path pointer (optional; used by forward DP)
         const Node *prev;
@@ -67,6 +67,15 @@ namespace kk
         All = 3                         // 3つすべて
     };
 
+    // ★追加: KanaFlick typo のオプション
+    struct TypoOptions
+    {
+        bool enable = false;
+        int maxPenalty = 3; // 2〜3 推奨
+        int maxOut = 128;   // yomiCps.commonPrefixSearchWithTypo の最大返却数
+        int weight = 1500;  // wordCost に加算する係数（penaltyUsed * weight）
+    };
+
     class GraphBuilder
     {
     public:
@@ -78,7 +87,9 @@ namespace kk
             const PosTable &pos,
             const LOUDSReaderUtf16 &tango,
             YomiSearchMode mode = YomiSearchMode::CommonPrefixOnly,
-            int predictivePrefixLen = 1);
+            int predictivePrefixLen = 1,
+            TypoOptions typo = {} // ★追加（既存呼び出しを壊さない）
+        );
     };
 
 } // namespace kk

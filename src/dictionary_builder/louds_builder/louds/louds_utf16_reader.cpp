@@ -3,6 +3,15 @@
 #include <fstream>
 #include <stdexcept>
 #include <algorithm>
+#include <queue>
+#include <unordered_map>
+#include <unordered_set>
+#include <mutex>
+#include <cmath>
+
+// ============================================================
+// ctor
+// ============================================================
 
 LOUDSReaderUtf16::LOUDSReaderUtf16(const BitVector &lbs,
                                    const BitVector &isLeaf,
@@ -14,7 +23,9 @@ LOUDSReaderUtf16::LOUDSReaderUtf16(const BitVector &lbs,
 {
 }
 
-// ---- LOUDS navigation ----
+// ============================================================
+// LOUDS navigation
+// ============================================================
 
 int LOUDSReaderUtf16::firstChild(int pos) const
 {
@@ -51,7 +62,9 @@ int LOUDSReaderUtf16::traverse(int pos, char16_t c) const
     return -1;
 }
 
-// ---- Common prefix search (existing behavior) ----
+// ============================================================
+// Common prefix search (existing behavior)
+// ============================================================
 
 std::vector<std::u16string> LOUDSReaderUtf16::commonPrefixSearch(const std::u16string &str) const
 {
@@ -88,7 +101,9 @@ std::vector<std::u16string> LOUDSReaderUtf16::commonPrefixSearch(const std::u16s
     return result;
 }
 
-// ---- Predictive search ----
+// ============================================================
+// Predictive search
+// ============================================================
 
 void LOUDSReaderUtf16::collectWords(int pos, std::u16string &prefix, std::vector<std::u16string> &out) const
 {
@@ -144,7 +159,9 @@ std::vector<std::u16string> LOUDSReaderUtf16::predictiveSearch(const std::u16str
     return out;
 }
 
-// ---- Omission-aware common prefix search ----
+// ============================================================
+// Omission-aware common prefix search
+// ============================================================
 
 std::vector<char16_t> LOUDSReaderUtf16::getCharVariations(char16_t ch)
 {
@@ -324,7 +341,341 @@ LOUDSReaderUtf16::commonPrefixSearchWithOmission(const std::u16string &str) cons
     return out;
 }
 
-// ---- Letter restore ----
+// ============================================================
+// ★KanaFlick typo-aware common prefix search
+//   - Dijkstra over (nodeIndex, strIndex) with cumulative penalty
+// ============================================================
+
+namespace
+{
+    enum class KFGroup : uint8_t
+    {
+        A,
+        KA,
+        SA,
+        TA,
+        NA,
+        HA,
+        MA,
+        YA,
+        RA,
+        WA,
+        N_GROUPS
+    };
+    enum class KFDir : uint8_t
+    {
+        CENTER,
+        LEFT,
+        UP,
+        RIGHT,
+        DOWN,
+        N_DIRS
+    };
+    struct KFPos
+    {
+        int x;
+        int y;
+    };
+    struct KFKey
+    {
+        KFGroup g;
+        KFDir d;
+    };
+
+    static inline int iabs(int x) { return x < 0 ? -x : x; }
+
+    static KFPos kf_pos[(int)KFGroup::N_GROUPS] = {
+        {0, 0},
+        {1, 0},
+        {2, 0},
+        {0, 1},
+        {1, 1},
+        {2, 1},
+        {0, 2},
+        {1, 2},
+        {2, 2},
+        {0, 3},
+    };
+
+    static char16_t kf_table[(int)KFGroup::N_GROUPS][(int)KFDir::N_DIRS] = {
+        // A
+        {u'あ', u'い', u'う', u'え', u'お'},
+        // KA
+        {u'か', u'き', u'く', u'け', u'こ'},
+        // SA
+        {u'さ', u'し', u'す', u'せ', u'そ'},
+        // TA
+        {u'た', u'ち', u'つ', u'て', u'と'},
+        // NA
+        {u'な', u'に', u'ぬ', u'ね', u'の'},
+        // HA
+        {u'は', u'ひ', u'ふ', u'へ', u'ほ'},
+        // MA
+        {u'ま', u'み', u'む', u'め', u'も'},
+        // YA（あなたの現状を踏襲）
+        {u'や', u'（', u'ゆ', u'）', u'よ'},
+        // RA
+        {u'ら', u'り', u'る', u'れ', u'ろ'},
+        // WA
+        {u'わ', u'を', u'ん', u'ー', u'〜'},
+    };
+
+    static int manhattan(KFGroup a, KFGroup b)
+    {
+        const auto pa = kf_pos[(int)a];
+        const auto pb = kf_pos[(int)b];
+        return iabs(pa.x - pb.x) + iabs(pa.y - pb.y);
+    }
+
+    static std::once_flag kf_once;
+    static std::unordered_map<char16_t, KFKey> kf_reverse;
+
+    static void kf_init_once()
+    {
+        kf_reverse.reserve(128);
+        for (int g = 0; g < (int)KFGroup::N_GROUPS; g++)
+        {
+            for (int d = 0; d < (int)KFDir::N_DIRS; d++)
+            {
+                const char16_t ch = kf_table[g][d];
+                kf_reverse.emplace(ch, KFKey{(KFGroup)g, (KFDir)d});
+            }
+        }
+    }
+
+    static inline const KFKey *kf_key_of(char16_t ch)
+    {
+        std::call_once(kf_once, kf_init_once);
+        auto it = kf_reverse.find(ch);
+        if (it == kf_reverse.end())
+            return nullptr;
+        return &it->second;
+    }
+
+    static inline char16_t kf_char_of(KFGroup g, KFDir d)
+    {
+        return kf_table[(int)g][(int)d];
+    }
+} // namespace
+
+std::vector<std::pair<char16_t, int>>
+LOUDSReaderUtf16::getTypoVariationsKanaFlick(char16_t ch)
+{
+    // Kotlinの TypoCategory を拡張して「キー違い + 方向違い」も許可する版
+    // - Exact(0)
+    // - TapKeyInFlick(1)              : 同一キー内で方向違い
+    // - DistanceNear(1)/Middle(2)/Far(7) : 同方向でキー違い
+    // - Cross (distance + 1)          : 近距離キーで方向も違う（例: か->お は 2）
+
+    std::vector<std::pair<char16_t, int>> out;
+    out.reserve(1 + 4 + 16 + 32);
+
+    out.push_back({ch, 0}); // Exact
+
+    const KFKey *key = kf_key_of(ch);
+    if (!key)
+        return out;
+
+    // ---- (1) 同一キー内: 方向ミス ----
+    for (int d = 0; d < (int)KFDir::N_DIRS; d++)
+    {
+        if ((KFDir)d == key->d)
+            continue;
+        const char16_t v = kf_char_of(key->g, (KFDir)d);
+        out.push_back({v, 1});
+    }
+
+    // ---- (2) 同方向: キー違い（従来） ----
+    for (int g2 = 0; g2 < (int)KFGroup::N_GROUPS; g2++)
+    {
+        const KFGroup gg = (KFGroup)g2;
+        if (gg == key->g)
+            continue;
+
+        const int dist = manhattan(key->g, gg);
+        int pen = 0;
+        if (dist == 1)
+            pen = 1;
+        else if (dist == 2)
+            pen = 2;
+        else
+            pen = 7;
+
+        const char16_t v = kf_char_of(gg, key->d);
+        out.push_back({v, pen});
+    }
+
+    // ---- (3) ★追加: 近距離キーで「方向も自由」な置換 ----
+    // 探索爆発を防ぐため dist<=2 のみ（必要なら 1 に絞ってもOK）
+    for (int g2 = 0; g2 < (int)KFGroup::N_GROUPS; g2++)
+    {
+        const KFGroup gg = (KFGroup)g2;
+        if (gg == key->g)
+            continue;
+
+        const int dist = manhattan(key->g, gg);
+        if (dist > 2)
+            continue;
+
+        int distPen = (dist == 1) ? 1 : 2; // dist==2
+        for (int d2 = 0; d2 < (int)KFDir::N_DIRS; d2++)
+        {
+            const KFDir dd = (KFDir)d2;
+            if (dd == key->d)
+                continue;         // 同方向は(2)で入っているので省略
+            const int dirPen = 1; // 方向違い
+            const int pen = distPen + dirPen;
+
+            const char16_t v = kf_char_of(gg, dd);
+            out.push_back({v, pen});
+        }
+    }
+
+    // dedup by char, keep min penalty
+    std::unordered_map<char16_t, int> best;
+    best.reserve(out.size());
+    for (auto &p : out)
+    {
+        auto it = best.find(p.first);
+        if (it == best.end() || p.second < it->second)
+            best[p.first] = p.second;
+    }
+
+    std::vector<std::pair<char16_t, int>> uniq;
+    uniq.reserve(best.size());
+    for (auto &kv : best)
+        uniq.push_back({kv.first, kv.second});
+
+    std::sort(uniq.begin(), uniq.end(), [](const auto &a, const auto &b)
+              {
+        if (a.second != b.second) return a.second < b.second;
+        return a.first < b.first; });
+
+    return uniq;
+}
+
+std::vector<LOUDSReaderUtf16::TypoSearchResult>
+LOUDSReaderUtf16::commonPrefixSearchWithTypo(const std::u16string &str, int maxPenalty, int maxOut) const
+{
+    std::vector<TypoSearchResult> results;
+    if (maxOut <= 0)
+        return results;
+    if (maxPenalty < 0)
+        return results;
+
+    struct State
+    {
+        int penalty = 0;
+        int node = 0;
+        size_t idx = 0;
+        std::u16string built;
+    };
+    struct Cmp
+    {
+        bool operator()(const State &a, const State &b) const
+        {
+            return a.penalty > b.penalty; // min-heap
+        }
+    };
+
+    // best[(node,idx)] = min penalty
+    std::unordered_map<uint64_t, int> best;
+    best.reserve(2048);
+
+    auto pack_key = [](int node, size_t idx) -> uint64_t
+    {
+        return (uint64_t)(uint32_t)node << 32 | (uint64_t)(uint32_t)idx;
+    };
+
+    std::priority_queue<State, std::vector<State>, Cmp> pq;
+    pq.push(State{0, 0, 0, std::u16string{}});
+
+    while (!pq.empty() && (int)results.size() < maxOut)
+    {
+        State cur = std::move(pq.top());
+        pq.pop();
+
+        if (cur.node < 0)
+            continue;
+        if ((size_t)cur.node >= LBS_.size())
+            continue;
+        if (cur.penalty > maxPenalty)
+            continue;
+
+        const uint64_t k = pack_key(cur.node, cur.idx);
+        auto it = best.find(k);
+        if (it != best.end() && cur.penalty > it->second)
+            continue;
+        best[k] = cur.penalty;
+
+        // leaf => accept current prefix
+        if ((size_t)cur.node < isLeaf_.size() && isLeaf_.get((size_t)cur.node))
+        {
+            results.push_back(TypoSearchResult{cur.built, cur.penalty});
+            // longer prefixも探索継続（commonPrefix用途）
+        }
+
+        if (cur.idx >= str.size())
+            continue;
+
+        const char16_t ch = str[cur.idx];
+        const auto vars = getTypoVariationsKanaFlick(ch);
+
+        for (const auto &vp : vars)
+        {
+            const char16_t vch = vp.first;
+            const int addPen = vp.second;
+            const int newPen = cur.penalty + addPen;
+            if (newPen > maxPenalty)
+                continue;
+
+            const int next = traverse(cur.node, vch);
+            if (next < 0)
+                continue;
+
+            State ns;
+            ns.penalty = newPen;
+            ns.node = next;
+            ns.idx = cur.idx + 1;
+            ns.built = cur.built;
+            ns.built.push_back(vch);
+            pq.push(std::move(ns));
+        }
+    }
+
+    // dedup by yomi, keep min penalty
+    std::vector<TypoSearchResult> dedup;
+    dedup.reserve(results.size());
+
+    for (auto &r : results)
+    {
+        bool found = false;
+        for (auto &e : dedup)
+        {
+            if (e.yomi == r.yomi)
+            {
+                if (r.penaltyUsed < e.penaltyUsed)
+                    e.penaltyUsed = r.penaltyUsed;
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+            dedup.push_back(std::move(r));
+    }
+
+    std::sort(dedup.begin(), dedup.end(), [](const TypoSearchResult &a, const TypoSearchResult &b)
+              {
+        if (a.penaltyUsed != b.penaltyUsed) return a.penaltyUsed < b.penaltyUsed;
+        if (a.yomi.size() != b.yomi.size()) return a.yomi.size() < b.yomi.size();
+        return a.yomi < b.yomi; });
+
+    return dedup;
+}
+
+// ============================================================
+// Letter restore
+// ============================================================
 
 std::u16string LOUDSReaderUtf16::getLetter(int nodeIndex) const
 {
@@ -359,7 +710,9 @@ std::u16string LOUDSReaderUtf16::getLetter(int nodeIndex) const
     return out;
 }
 
-// ---- Node lookup ----
+// ============================================================
+// Node lookup
+// ============================================================
 
 int LOUDSReaderUtf16::getNodeIndex(const std::u16string &s) const
 {
@@ -411,7 +764,9 @@ int LOUDSReaderUtf16::search(int index, const std::u16string &chars, size_t word
     return -1;
 }
 
-// ---- File I/O ----
+// ============================================================
+// File I/O
+// ============================================================
 
 void LOUDSReaderUtf16::read_u64(std::istream &is, uint64_t &v)
 {

@@ -195,6 +195,18 @@ echo "きょうはいいてんきです" | ./build/prefix_predict_cli --yomi_ter
 
 ```
 
+### Typo Correction 12 key:
+```bash
+
+ ./build/astar_zenz_fuse_cli --yomi_termid ./build/yomi_termid.louds --tango ./build/tango.louds --tokens ./build/token_array.bin --pos_table ./build/pos_table.bin --conn ./build/connection_single_column.bin --zenz_model ./models/zenz/zenz-v3.1-small.gguf --q "あはようございます" --zenz_mode eval --zenz_show_eval --verbose 2>/dev/null --yomi_mode cps_omit --beam 16 --typo on --typo_max_penalty 2 --typo_weight 1500 --typo_max_out 128
+
+```
+
+```bash
+./build/astar_zenz_fuse_cli --yomi_termid ./build/yomi_termid.louds --tango ./build/tango.louds --tokens ./build/token_array.bin --pos_table ./build/pos_table.bin --conn ./build/connection_single_column.bin --zenz_model ./models/zenz/zenz-v3.1-small.gguf --q "こはようございます" --zenz_mode eval --zenz_show_eval --verbose 2>/dev/null --yomi_mode cps_omit --beam 16 --typo on --typo_max_penalty 2 --typo_weight 1500 --typo_max_out 128
+
+./build/astar_zenz_fuse_cli --yomi_termid ./build/yomi_termid.louds --tango ./build/tango.louds --tokens ./build/token_array.bin --pos_table ./build/pos_table.bin --conn ./build/connection_single_column.bin --zenz_model ./models/zenz/zenz-v3.1-small.gguf --q "かはようございます" --zenz_mode eval --zenz_show_eval --verbose 2>/dev/null --yomi_mode cps_omit --beam 16 --typo on --typo_max_penalty 2 --typo_weight 1500 --typo_max_out 128
+```
 ---
 
 ## AJIMEE-Bench ベンチマーク
