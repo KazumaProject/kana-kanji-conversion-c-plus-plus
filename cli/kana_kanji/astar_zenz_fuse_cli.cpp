@@ -7,6 +7,13 @@
 //                          else        -> stable sort by FIX prefix length desc
 //   --zenz_mode gen_eval : gen + then eval-sort including gen result
 //   --zenz_mode off      : A* only
+//
+// Timing options (added):
+//   --show_time          : print total elapsed time (ms) for each query line
+//   --time_detail        : also print breakdown (A*, Zenz gen, Zenz eval)
+// Notes:
+//   - In --zenz_mode gen, Zenz generation runs async in parallel with A*.
+//     time_ms_zenz_gen measures the generation task wall time, but it overlaps with A*.
 
 #include <algorithm>
 #include <cctype>
@@ -27,6 +34,7 @@
 #include <unordered_set>
 #include <vector>
 #include <thread>
+#include <chrono> // ★ added
 
 #include "connection_id/connection_id_builder.hpp"
 #include "graph_builder/graph.hpp"
@@ -37,6 +45,21 @@
 #include "token_array/token_array.hpp"
 
 #include "llama.h"
+
+// ============================================================
+// Small chrono helpers
+// ============================================================
+static inline int64_t now_ms()
+{
+    using namespace std::chrono;
+    return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
+static inline int64_t elapsed_ms(int64_t t0_ms)
+{
+    const int64_t t1 = now_ms();
+    return t1 - t0_ms;
+}
 
 // ============================================================
 // UTF-8 <-> UTF-16 (strict)  (copied from astar_bunsetsu_cli.cpp)
@@ -1029,6 +1052,8 @@ static void usage(const char *argv0)
         << "      [--zenz_gpu_layers 0] [--zenz_no_mmap] [--zenz_offload_kqv]\n"
         // ★追加: typo args
         << "      [--typo on|off] [--typo_max_penalty N] [--typo_weight W] [--typo_max_out M]\n"
+        // ★追加: time args
+        << "      [--show_time] [--time_detail]\n"
         << "      [--verbose]\n"
         << "\n"
         << "Behavior:\n"
@@ -1040,12 +1065,20 @@ static void usage(const char *argv0)
         << "  - --zenz_mode gen_eval : apply gen, then eval-sort including gen output.\n"
         << "                           NOTE: only in gen_eval, Zenz gen query uses A* top-1 yomi (omit-aware).\n"
         << "  - --zenz_mode off      : disable Zenz completely (A* only).\n"
-        << "  - --typo on            : enable KanaFlick 12-key typo-aware yomi search (adds penalty to word cost).\n";
+        << "  - --typo on            : enable KanaFlick 12-key typo-aware yomi search (adds penalty to word cost).\n"
+        << "  - --show_time          : print elapsed time for each query (ms). In gen mode, gen overlaps with A*.\n"
+        << "  - --time_detail        : also print breakdown: A*, Zenz gen, Zenz eval (ms).\n";
 }
 
 // ============================================================
 // Core: run one query
 // ============================================================
+struct GenResult
+{
+    std::string out;
+    int64_t gen_ms = -1;
+};
+
 static void run_one_fused(
     const LOUDSReaderUtf16 &yomiCps,
     const LOUDSWithTermIdReaderUtf16 &yomiTerm,
@@ -1064,9 +1097,13 @@ static void run_one_fused(
     bool zenzShowEval,
     bool showYomi,
     bool verbose,
-    kk::TypoOptions typoOpt // ★追加
+    kk::TypoOptions typoOpt,
+    bool showTime,     // ★ added
+    bool timeDetail    // ★ added
 )
 {
+    const int64_t t_total0 = now_ms(); // ★ timing
+
     std::u16string q16;
     if (!utf8_to_u16(q_utf8, q16))
     {
@@ -1074,28 +1111,48 @@ static void run_one_fused(
         return;
     }
 
-    std::future<std::string> fut_zenz;
+    // Zenz gen async (only when zenzMode == Gen)
+    std::future<GenResult> fut_zenz;
     const bool need_gen = (zenzMode == ZenzMode::Gen || zenzMode == ZenzMode::GenEval);
+
     if (need_gen && zenzMode == ZenzMode::Gen)
     {
         if (!zenz)
             die("internal: zenzMode requires zenz runner but zenz is null");
-        fut_zenz = std::async(std::launch::async, [&]() -> std::string
+
+        const std::string q_copy = q_utf8;
+        fut_zenz = std::async(std::launch::async, [&, q_copy]() -> GenResult
                               {
-                                  return zenz->generate(q_utf8); // gen uses original query
+                                  GenResult gr;
+                                  const int64_t t0 = now_ms();
+                                  gr.out = zenz->generate(q_copy); // gen uses original query
+                                  gr.gen_ms = elapsed_ms(t0);
+                                  return gr;
                               });
     }
 
-    // A* graph + search
-    kk::Graph graph = kk::GraphBuilder::constructGraph(
-        q16, yomiCps, yomiTerm, tokens, pos, tango, yomiMode, predK, typoOpt);
+    // A* graph + search timing
+    int64_t time_ms_astar = -1;
+    kk::Graph graph;
+    std::vector<kk::Candidate> cands;
+    std::vector<int> bunsetsu;
 
-    auto [cands, bunsetsu] = kk::FindPath::backwardAStarWithBunsetsu(
-        graph,
-        static_cast<int>(q16.size()),
-        conn,
-        nBest,
-        beamWidth);
+    {
+        const int64_t t0 = now_ms();
+        graph = kk::GraphBuilder::constructGraph(
+            q16, yomiCps, yomiTerm, tokens, pos, tango, yomiMode, predK, typoOpt);
+
+        auto ret = kk::FindPath::backwardAStarWithBunsetsu(
+            graph,
+            static_cast<int>(q16.size()),
+            conn,
+            nBest,
+            beamWidth);
+        cands = std::move(ret.first);
+        bunsetsu = std::move(ret.second);
+
+        time_ms_astar = elapsed_ms(t0);
+    }
 
     // Collect A* output
     std::vector<OutCand> out;
@@ -1127,6 +1184,7 @@ static void run_one_fused(
     // Apply Zenz generate prepend/move-to-front
     std::string zenz_out;
     std::string zenz_query_yomi = q_utf8;
+    int64_t time_ms_zenz_gen = -1;
 
     if (need_gen)
     {
@@ -1143,17 +1201,23 @@ static void run_one_fused(
             {
                 zenz_query_yomi = q_utf8;
             }
+
+            const int64_t t0 = now_ms();
             zenz_out = zenz->generate(zenz_query_yomi);
+            time_ms_zenz_gen = elapsed_ms(t0);
         }
         else
         {
             try
             {
-                zenz_out = fut_zenz.get();
+                GenResult gr = fut_zenz.get();
+                zenz_out = std::move(gr.out);
+                time_ms_zenz_gen = gr.gen_ms;
             }
             catch (...)
             {
                 zenz_out.clear();
+                time_ms_zenz_gen = -1;
             }
             zenz_query_yomi = q_utf8;
         }
@@ -1194,11 +1258,14 @@ static void run_one_fused(
     }
 
     // Eval-sort (only for eval/gen_eval)
+    int64_t time_ms_zenz_eval = -1;
     std::vector<ZenzRunner::EvalOut> evals;
     if (zenzMode == ZenzMode::Eval || zenzMode == ZenzMode::GenEval)
     {
         if (!zenz)
             die("internal: zenzMode requires zenz runner but zenz is null");
+
+        const int64_t t0 = now_ms();
 
         evals.assign(out.size(), {});
         std::unordered_map<std::string, std::vector<size_t>> groups;
@@ -1285,7 +1352,11 @@ static void run_one_fused(
                 evals = std::move(es);
             }
         }
+
+        time_ms_zenz_eval = elapsed_ms(t0);
     }
+
+    const int64_t time_ms_total = elapsed_ms(t_total0);
 
     // Print header
     std::cout
@@ -1317,8 +1388,21 @@ static void run_one_fused(
               << " typo=" << (typoOpt.enable ? "on" : "off")
               << " typo_max_penalty=" << typoOpt.maxPenalty
               << " typo_weight=" << typoOpt.weight
-              << " typo_max_out=" << typoOpt.maxOut
-              << "\n";
+              << " typo_max_out=" << typoOpt.maxOut;
+
+    // ★ timing print
+    if (showTime)
+    {
+        std::cout << " time_ms=" << time_ms_total;
+        if (timeDetail)
+        {
+            std::cout << " time_ms_astar=" << time_ms_astar
+                      << " time_ms_zenz_gen=" << time_ms_zenz_gen
+                      << " time_ms_zenz_eval=" << time_ms_zenz_eval;
+        }
+    }
+
+    std::cout << "\n";
 
     if (showBunsetsu)
     {
@@ -1417,6 +1501,10 @@ int main(int argc, char **argv)
         typoOpt.maxPenalty = 3;
         typoOpt.maxOut = 128;
         typoOpt.weight = 1500;
+
+        // ★追加: time options
+        bool showTime = false;
+        bool timeDetail = false;
 
         // Zenz options
         ZenzRunner::Options zopt;
@@ -1542,6 +1630,18 @@ int main(int argc, char **argv)
             if (a == "--typo_max_out")
             {
                 typoOpt.maxOut = std::stoi(need("--typo_max_out"));
+                continue;
+            }
+
+            // ★追加: timing args
+            if (a == "--show_time")
+            {
+                showTime = true;
+                continue;
+            }
+            if (a == "--time_detail")
+            {
+                timeDetail = true;
                 continue;
             }
 
@@ -1697,7 +1797,9 @@ int main(int argc, char **argv)
                 zenzShowEval,
                 showYomi,
                 verbose,
-                typoOpt);
+                typoOpt,
+                showTime,
+                timeDetail);
             return 0;
         }
 
@@ -1719,7 +1821,9 @@ int main(int argc, char **argv)
                 zenzShowEval,
                 showYomi,
                 verbose,
-                typoOpt);
+                typoOpt,
+                showTime,
+                timeDetail);
         }
 
         return 0;
