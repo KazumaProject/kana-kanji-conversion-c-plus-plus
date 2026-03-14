@@ -24,7 +24,7 @@ jobs:
 
       - name: Configure (CMake)
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_MOZC_FETCH=ON
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_MOZC_FETCH=ON -DENABLE_ZENZ=OFF
 
       - name: Build
         run: |
