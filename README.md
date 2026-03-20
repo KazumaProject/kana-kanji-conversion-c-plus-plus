@@ -513,6 +513,19 @@ Outputs in `build/`:
 ./build/astar_zenz_rerank_cli --yomi_termid ./build/yomi_termid.louds --tango ./build/tango.louds --tokens ./build/token_array.bin --pos_table ./build/pos_table.bin --conn ./build/connection_single_column.bin --zenz_model ./models/zenz/zenz-v3.1-small.gguf --q "わたしのなまえはなかのです" --n 10 --beam 50 --zenz_rerank_mode linear_fuse --zenz_score_mode diff --zenz_alpha 0.35 --zenz_beta 1.0 --zenz_show_scores
 ```
 
+```bash
+./build/astar_zenz_rerank_cli \
+  --yomi_termid ./build/yomi_termid.louds \
+  --tango ./build/tango.louds \
+  --tokens ./build/token_array.bin \
+  --pos_table ./build/pos_table.bin \
+  --conn ./build/connection_single_column.bin \
+  --zenz_model ./models/zenz/zenz-v3.1-small.gguf \
+  --q "にわでいぬをかう" \
+  --n 10 --beam 50 \
+  --zenz_article_like
+```
+
 Measured locally on 100 `no_context` AJIMEE-Bench items (`n=10`, `beam=50`):
 
 Baseline:
