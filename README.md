@@ -206,6 +206,8 @@ echo "きょうはいいてんきです" | ./build/prefix_predict_cli --yomi_ter
   * 候補全文を採点します。
 * `--zenz_score_mode diff`
   * A* 1位候補との差分接尾辞だけを採点します。
+* `--zenz_article_like`
+  * 記事寄せプリセットです（`--zenz_rerank_mode zenz_only` + `--zenz_score_mode whole` + `--zenz_use_raw`）。
 
 ```bash
 ./build/astar_zenz_rerank_cli \
