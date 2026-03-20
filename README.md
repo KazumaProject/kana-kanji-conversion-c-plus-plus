@@ -60,9 +60,11 @@ cmake --build build -j
 #### (C) zenz のビルド
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DENABLE_ZENZ=ON
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DENABLE_ZENZ=ON -DZENZ_USE_METAL=OFF
 cmake --build build -j
 ```
+
+`ZENZ_USE_METAL` は既定で `OFF` です。Metal を使いたい環境では `-DZENZ_USE_METAL=ON` を指定してください。
 
 #### 再ビルド
 
@@ -81,6 +83,9 @@ rm -rf build && cmake -S . -B build -DCMAKE_C_COMPILER=gcc-10 -DCMAKE_CXX_COMPIL
 * `build/prefix_predict_cli`
 * `build/astar_bunsetsu_cli`
 * `build/astar_bunsetsu_parallel_cli`
+* `build/zenz_convert_cli`（`-DENABLE_ZENZ=ON` のとき）
+* `build/astar_zenz_fuse_cli`（従来の fusion CLI）
+* `build/astar_zenz_rerank_cli`（A* top-N を zenz で再ランキング）
 * `build/cps_cli`
 * `build/termid_cli`
 
@@ -187,15 +192,70 @@ echo "きょうはいいてんきです" | ./build/prefix_predict_cli --yomi_ter
 ./build/zenz_convert_cli --model ./models/zenz/zenz-v3.1-small.gguf --q "わたしのなまえはなかのです" --max_new 64 --verbose
 
 ./build/zenz_convert_cli --model ./models/zenz/zenz-v3.1-small.gguf --mode eval --input "わたしのなまえはなかのです" --candidate "私の名前は中野です" --candidate "わたしのなまえはかのです" --candidate "私の名前はなかのです" --n_ctx 512 --n_batch 512 --verbose
+```
+
+### zenz による既存候補の再ランキング
+
+`astar_zenz_rerank_cli` は、記事のように **A* で得た top-N 候補を zenz で再採点して並び替える** CLI です。
+
+* `--zenz_rerank_mode linear_fuse`
+  * `base_cost` と `zenz` スコアを線形融合します。
+* `--zenz_rerank_mode zenz_only`
+  * `zenz` スコアだけで並び替えます。
+* `--zenz_score_mode whole`
+  * 候補全文を採点します。
+* `--zenz_score_mode diff`
+  * A* 1位候補との差分接尾辞だけを採点します。
+
+```bash
+./build/astar_zenz_rerank_cli \
+  --yomi_termid ./build/yomi_termid.louds \
+  --tango ./build/tango.louds \
+  --tokens ./build/token_array.bin \
+  --pos_table ./build/pos_table.bin \
+  --conn ./build/connection_single_column.bin \
+  --zenz_model ./models/zenz/zenz-v3.1-small.gguf \
+  --q "わたしのなまえはなかのです" \
+  --n 10 --beam 50 \
+  --zenz_rerank_mode linear_fuse \
+  --zenz_score_mode diff \
+  --zenz_alpha 0.35 \
+  --zenz_beta 1.0 \
+  --zenz_show_scores \
+  --show_yomi
+```
+
+出力例:
+
+```text
+1    私の名前は中野です   score=18354 ... zenz_avg=-0.0640077 fused=1.35
+2    わたしの名前は中野です score=19433 ... zenz_avg=-0.178681 fused=0.995413
+3    私の名前は仲野です   score=19656 ... zenz_avg=-0.727558 fused=0.626583
+```
+
+```bash
+./build/astar_zenz_rerank_cli \
+  --yomi_termid ./build/yomi_termid.louds \
+  --tango ./build/tango.louds \
+  --tokens ./build/token_array.bin \
+  --pos_table ./build/pos_table.bin \
+  --conn ./build/connection_single_column.bin \
+  --zenz_model ./models/zenz/zenz-v3.1-small.gguf \
+  --q "きをきる" \
+  --n 5 --beam 20 \
+  --zenz_show_scores
+```
+
+この設定では `気を切る` が 1 位になり、`機を切る` より上に来ます。
 
 # 既存の変換候補に zenz の変換候補を追加する
+```bash
 ./build/astar_zenz_fuse_cli --yomi_termid ./build/yomi_termid.louds --tango ./build/tango.louds --tokens ./build/token_array.bin --pos_table ./build/pos_table.bin --conn ./build/connection_single_column.bin --zenz_model ./models/zenz/zenz-v3.1-small.gguf --q "きょうのてんき" --n 10 --beam 50 --show_bunsetsu 2>/dev/null
 
 ./build/astar_zenz_fuse_cli --yomi_termid ./build/yomi_termid.louds --tango ./build/tango.louds --tokens ./build/token_array.bin --pos_table ./build/pos_table.bin --conn ./build/connection_single_column.bin --zenz_model ./models/zenz/zenz-v3.1-small.gguf --q "わたしのなまえはなかのです" --zenz_mode eval --zenz_show_eval --verbose 2>/dev/null
 
 
 ./build/astar_zenz_fuse_cli --yomi_termid ./build/yomi_termid.louds --tango ./build/tango.louds --tokens ./build/token_array.bin --pos_table ./build/pos_table.bin --conn ./build/connection_single_column.bin --zenz_model ./models/zenz/zenz-v3.1-small.gguf --q "きをきる" --zenz_mode gen_eval --zenz_show_eval --verbose 2>/dev/null --yomi_mode cps_omit --beam 16 --typo on --typo_max_penalty 2 --typo_weight 1500 --typo_max_out 128 
-
 ```
 
 ### Typo Correction 12 key:
@@ -262,6 +322,29 @@ python3 tools/run_ajimee_bench.py --items AJIMEE-Bench/JWTD_v2/v1/evaluation_ite
 ```bash
 python3 tools/run_ajimee_bench.py --items AJIMEE-Bench/JWTD_v2/v1/evaluation_items.json --subset no_context --n 10 --beam 50 --k 10 --timeout 10 --progress --every 10 --fail_jsonl failed_errors_only.jsonl --fail_mode error --cmd './build/astar_bunsetsu_cli --yomi_termid ./build/yomi_termid.louds --tango ./build/tango.louds --tokens ./build/token_array.bin --pos_table ./build/pos_table.bin --conn ./build/connection_single_column.bin --q "{q}" --n {n} --beam {beam} --show_bunsetsu'
 ```
+
+#### (D) zenz rerank の比較
+
+ベースライン:
+
+```bash
+python3 tools/run_ajimee_bench.py --items AJIMEE-Bench/JWTD_v2/v1/evaluation_items.json --subset no_context --n 10 --beam 50 --k 10 --timeout 20 --progress --every 20 --cmd './build/astar_bunsetsu_cli --yomi_termid ./build/yomi_termid.louds --tango ./build/tango.louds --tokens ./build/token_array.bin --pos_table ./build/pos_table.bin --conn ./build/connection_single_column.bin --q "{q}" --n {n} --beam {beam}'
+```
+
+zenz rerank:
+
+```bash
+python3 tools/run_ajimee_bench.py --items AJIMEE-Bench/JWTD_v2/v1/evaluation_items.json --subset no_context --n 10 --beam 50 --k 10 --timeout 20 --progress --every 20 --cmd './build/astar_zenz_rerank_cli --yomi_termid ./build/yomi_termid.louds --tango ./build/tango.louds --tokens ./build/token_array.bin --pos_table ./build/pos_table.bin --conn ./build/connection_single_column.bin --zenz_model ./models/zenz/zenz-v3.1-small.gguf --q "{q}" --n {n} --beam {beam}'
+```
+
+2026-03-20 時点のローカル実測（`no_context` 100件, `n=10`, `beam=50`）:
+
+| System | Acc@1 | Acc@10 | MRR@10 | MinCER@1 | Elapsed |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `astar_bunsetsu_cli` | 0.4700 | 0.8000 | 0.5708 | 0.0596 | 17.97s |
+| `astar_zenz_rerank_cli` | 0.6300 | 0.8000 | 0.7053 | 0.0375 | 54.99s |
+
+`Acc@10` は維持したまま、`Acc@1` と `MRR@10` が大きく改善しました。
 
 ### 4) 文脈あり（100件）について
 
@@ -350,6 +433,13 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
+#### (C) Build with zenz / llama.cpp
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DENABLE_ZENZ=ON -DZENZ_USE_METAL=OFF
+cmake --build build -j
+```
+
 Key binaries:
 
 * `build/mozc_dic_fetch` (when enabled)
@@ -358,6 +448,9 @@ Key binaries:
 * `build/prefix_predict_cli`
 * `build/astar_bunsetsu_cli`
 * `build/astar_bunsetsu_parallel_cli`
+* `build/zenz_convert_cli` (when `-DENABLE_ZENZ=ON`)
+* `build/astar_zenz_fuse_cli` (legacy fusion CLI)
+* `build/astar_zenz_rerank_cli` (A* top-N reranker with zenz)
 * `build/cps_cli`
 * `build/termid_cli`
 
@@ -402,6 +495,21 @@ Outputs in `build/`:
 ```bash
 ./build/astar_bunsetsu_cli --yomi_termid ./build/yomi_termid.louds --tango ./build/tango.louds --tokens ./build/token_array.bin --pos_table ./build/pos_table.bin --conn ./build/connection_single_column.bin --q きょうのてんき --n 10 --beam 50 --show_bunsetsu
 ```
+
+## zenz reranking
+
+`astar_zenz_rerank_cli` evaluates existing A* top-N candidates with `zenz` and reorders them.
+
+```bash
+./build/astar_zenz_rerank_cli --yomi_termid ./build/yomi_termid.louds --tango ./build/tango.louds --tokens ./build/token_array.bin --pos_table ./build/pos_table.bin --conn ./build/connection_single_column.bin --zenz_model ./models/zenz/zenz-v3.1-small.gguf --q "わたしのなまえはなかのです" --n 10 --beam 50 --zenz_rerank_mode linear_fuse --zenz_score_mode diff --zenz_alpha 0.35 --zenz_beta 1.0 --zenz_show_scores
+```
+
+Measured locally on 100 `no_context` AJIMEE-Bench items (`n=10`, `beam=50`):
+
+| System | Acc@1 | Acc@10 | MRR@10 | MinCER@1 | Elapsed |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `astar_bunsetsu_cli` | 0.4700 | 0.8000 | 0.5708 | 0.0596 | 17.97s |
+| `astar_zenz_rerank_cli` | 0.6300 | 0.8000 | 0.7053 | 0.0375 | 54.99s |
 
 ---
 

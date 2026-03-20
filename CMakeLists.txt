@@ -160,6 +160,9 @@ target_link_libraries(astar_bunsetsu_cli PRIVATE
 option(ENABLE_ZENZ "Build zenz_convert_cli (llama.cpp)" ON)
 
 if(ENABLE_ZENZ)
+  option(ZENZ_USE_METAL "Enable Metal backend for zenz/llama.cpp" OFF)
+  set(GGML_METAL ${ZENZ_USE_METAL} CACHE BOOL "" FORCE)
+
   # Reduce build time/noise
   set(LLAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
   set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
@@ -220,6 +223,23 @@ if(ENABLE_ZENZ)
     Threads::Threads
   )
 
+  add_library(zenz_support STATIC
+    src/zenz/runner.cpp
+    src/zenz/reranker.cpp
+  )
+
+  target_compile_features(zenz_support PUBLIC cxx_std_20)
+
+  target_include_directories(zenz_support PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/include
+  )
+
+  target_link_libraries(zenz_support PUBLIC
+    ${_LLAMA_LIB_TARGET}
+    Threads::Threads
+  )
+
   # ==========================================================
   # NEW: Fused CLI (A* + Zenz in parallel, prepend Zenz result)
   # ==========================================================
@@ -243,5 +263,20 @@ if(ENABLE_ZENZ)
     path_algorithm
     ${_LLAMA_LIB_TARGET}
     Threads::Threads
+  )
+
+  add_executable(astar_zenz_rerank_cli
+    cli/kana_kanji/astar_zenz_rerank_cli.cpp
+  )
+
+  target_compile_features(astar_zenz_rerank_cli PRIVATE cxx_std_20)
+
+  target_link_libraries(astar_zenz_rerank_cli PRIVATE
+    louds_utf16
+    token_array
+    connection_id
+    graph_builder
+    path_algorithm
+    zenz_support
   )
 endif()
