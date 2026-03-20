@@ -345,6 +345,64 @@ zenz rerank（記事寄せプリセット）:
 python3 tools/run_ajimee_bench.py --items AJIMEE-Bench/JWTD_v2/v1/evaluation_items.json --subset no_context --n 10 --beam 50 --k 10 --timeout 20 --progress --every 20 --cmd './build/astar_zenz_rerank_cli --yomi_termid ./build/yomi_termid.louds --tango ./build/tango.louds --tokens ./build/token_array.bin --pos_table ./build/pos_table.bin --conn ./build/connection_single_column.bin --zenz_model ./models/zenz/zenz-v3.1-small.gguf --q "{q}" --n {n} --beam {beam} --zenz_article_like'
 ```
 
+#### (E) Hugging Face モデルを GGUF 化して rerank ベンチで使う
+
+`astar_zenz_rerank_cli` は `--zenz_model` に任意 GGUF を指定できます。
+このリポジトリでは以下 2 つの補助スクリプトを追加しています。
+
+* `tools/build_hf_gguf.py`
+  * Hugging Face からモデルを取得し、`third_party/llama.cpp/convert_hf_to_gguf.py` で GGUF 化
+* `tools/run_ajimee_bench_rerank.py`
+  * Ajimee Bench 実行時に `--model` で rerank 用 GGUF を指定するラッパー
+
+前提（未導入の場合）:
+
+```bash
+python3 -m pip install -U huggingface_hub
+```
+
+`ku-nlp/gpt2-small-japanese-char` を GGUF 化（例: f16）:
+
+```bash
+python3 tools/build_hf_gguf.py --repo-id ku-nlp/gpt2-small-japanese-char --outtype f16
+```
+
+サイズを小さくしたい場合は、`--quantize-type` で llama.cpp の量子化タイプを指定できます（例: `Q4_K_M`）。
+
+```bash
+python3 tools/build_hf_gguf.py --repo-id ku-nlp/gpt2-small-japanese-char --outtype f16 --convert-only --quantize-type Q4_K_M
+```
+
+必要に応じて `--quantized-outfile` で出力先を指定できます。
+
+生成先デフォルト:
+
+* `models/hf-rerank/ku-nlp--gpt2-small-japanese-char/gpt2-small-japanese-char.f16.gguf`
+
+モデル指定で Ajimee Bench 実行（記事寄せプリセット）:
+
+```bash
+python3 tools/run_ajimee_bench_rerank.py \
+  --items AJIMEE-Bench/JWTD_v2/v1/evaluation_items.json \
+  --subset no_context \
+  --n 10 --beam 50 --k 10 --timeout 20 \
+  --progress --every 20 \
+  --model ./models/hf-rerank/ku-nlp--gpt2-small-japanese-char/gpt2-small-japanese-char.f16.gguf \
+  --article_like
+```
+
+```bash
+python3 tools/run_ajimee_bench_rerank.py \
+  --items AJIMEE-Bench/JWTD_v2/v1/evaluation_items.json \
+  --subset no_context \
+  --n 20 --beam 100 --k 10 --timeout 20 \
+  --progress --every 20 \
+  --model ./models/hf-rerank/ku-nlp--gpt2-small-japanese-char/gpt2-small-japanese-char.f16.q4_k_m.gguf \
+  --article_like
+```
+
+`--article_like` を外すと、`--zenz_rerank_mode` / `--zenz_score_mode` / `--zenz_alpha` / `--zenz_beta` などを直接指定できます。
+
 2026-03-20 時点のローカル実測（`no_context` 100件, `n=10`, `beam=50`）:
 
 | System | Acc@1 | Acc@10 | MRR@10 | MinCER@1 | Elapsed |
