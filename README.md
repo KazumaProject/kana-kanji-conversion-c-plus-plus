@@ -376,6 +376,9 @@ python3 tools/build_hf_gguf.py --repo-id ku-nlp/gpt2-small-japanese-char --outty
 
 ```bash
 python3 tools/build_hf_gguf.py --repo-id ku-nlp/gpt2-small-japanese-char --outtype f16 --convert-only --quantize-type Q4_K_M
+
+## zenz
+python3 tools/build_hf_gguf.py --repo-id Miwa-Keita/zenz-v3.1-small --outtype f16 --quantize-type Q4_K_M
 ```
 
 必要に応じて `--quantized-outfile` で出力先を指定できます。
@@ -393,6 +396,14 @@ python3 tools/run_ajimee_bench_rerank.py \
   --n 10 --beam 50 --k 10 --timeout 20 \
   --progress --every 20 \
   --model ./models/hf-rerank/ku-nlp--gpt2-small-japanese-char/gpt2-small-japanese-char.f16.gguf \
+  --article_like
+
+  python3 tools/run_ajimee_bench_rerank.py \
+  --items AJIMEE-Bench/JWTD_v2/v1/evaluation_items.json \
+  --subset no_context \
+  --n 10 --beam 50 --k 10 --timeout 20 \
+  --progress --every 20 \
+  --model ./models/hf-rerank/Miwa-Keita--zenz-v3.1-small/zenz-v3.1-small.f16.q4_k_m.gguf \
   --article_like
 ```
 
