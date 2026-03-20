@@ -714,11 +714,15 @@ static EvalResult evaluate_candidate_core(
     if (startOffset < 0)
         return r;
 
-    const float *dummy = get_logits_kv(ctx, seq_id, tokens, startOffset, kv);
-    if (!dummy)
+    const float *logits_all = get_logits_kv(ctx, seq_id, tokens, startOffset, kv);
+    if (!logits_all)
         return r;
 
     float sum_score = 0.0f;
+    auto slice_ptr = [&](int slice_idx) -> const float *
+    {
+        return logits_all + (size_t)slice_idx * (size_t)n_vocab;
+    };
 
     for (size_t i = (size_t)startOffset + 1; i < tokens.size(); i++)
     {
@@ -727,9 +731,7 @@ static EvalResult evaluate_candidate_core(
         if (slice_idx < 0)
             continue;
 
-        const float *dist = llama_get_logits_ith(ctx, slice_idx);
-        if (!dist)
-            return r;
+        const float *dist = slice_ptr(slice_idx);
 
         const float lse = logsumexp(dist, (int)n_vocab);
 
