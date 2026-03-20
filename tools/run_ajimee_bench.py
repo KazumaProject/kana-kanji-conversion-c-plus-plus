@@ -431,7 +431,15 @@ def main() -> int:
         def agg(sub: str) -> Dict[str, float]:
             rs = [x for x in results if x.subset == sub]
             if not rs:
-                return {"count": 0}
+                return {
+                    "count": 0.0,
+                    "ok": 0.0,
+                    "acc1": 0.0,
+                    f"acc@{args.n}": 0.0,
+                    f"acc@{args.k}": 0.0,
+                    f"mrr@{args.k}": 0.0,
+                    "mincer1": float("inf"),
+                }
             count = len(rs)
             okc = sum(1 for x in rs if x.ok)
             acc1 = sum(x.acc1 for x in rs) / count

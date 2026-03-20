@@ -206,6 +206,8 @@ echo "きょうはいいてんきです" | ./build/prefix_predict_cli --yomi_ter
   * 候補全文を採点します。
 * `--zenz_score_mode diff`
   * A* 1位候補との差分接尾辞だけを採点します。
+* `--zenz_article_like`
+  * 記事寄せプリセットです（`--zenz_rerank_mode zenz_only` + `--zenz_score_mode whole` + `--zenz_use_raw`）。
 
 ```bash
 ./build/astar_zenz_rerank_cli \
@@ -331,20 +333,101 @@ python3 tools/run_ajimee_bench.py --items AJIMEE-Bench/JWTD_v2/v1/evaluation_ite
 python3 tools/run_ajimee_bench.py --items AJIMEE-Bench/JWTD_v2/v1/evaluation_items.json --subset no_context --n 10 --beam 50 --k 10 --timeout 20 --progress --every 20 --cmd './build/astar_bunsetsu_cli --yomi_termid ./build/yomi_termid.louds --tango ./build/tango.louds --tokens ./build/token_array.bin --pos_table ./build/pos_table.bin --conn ./build/connection_single_column.bin --q "{q}" --n {n} --beam {beam}'
 ```
 
-zenz rerank:
+zenz rerank（デフォルト設定）:
 
 ```bash
 python3 tools/run_ajimee_bench.py --items AJIMEE-Bench/JWTD_v2/v1/evaluation_items.json --subset no_context --n 10 --beam 50 --k 10 --timeout 20 --progress --every 20 --cmd './build/astar_zenz_rerank_cli --yomi_termid ./build/yomi_termid.louds --tango ./build/tango.louds --tokens ./build/token_array.bin --pos_table ./build/pos_table.bin --conn ./build/connection_single_column.bin --zenz_model ./models/zenz/zenz-v3.1-small.gguf --q "{q}" --n {n} --beam {beam}'
 ```
 
+zenz rerank（記事寄せプリセット）:
+
+```bash
+python3 tools/run_ajimee_bench.py --items AJIMEE-Bench/JWTD_v2/v1/evaluation_items.json --subset no_context --n 10 --beam 50 --k 10 --timeout 20 --progress --every 20 --cmd './build/astar_zenz_rerank_cli --yomi_termid ./build/yomi_termid.louds --tango ./build/tango.louds --tokens ./build/token_array.bin --pos_table ./build/pos_table.bin --conn ./build/connection_single_column.bin --zenz_model ./models/zenz/zenz-v3.1-small.gguf --q "{q}" --n {n} --beam {beam} --zenz_article_like'
+```
+
+#### (E) Hugging Face モデルを GGUF 化して rerank ベンチで使う
+
+`astar_zenz_rerank_cli` は `--zenz_model` に任意 GGUF を指定できます。
+このリポジトリでは以下 2 つの補助スクリプトを追加しています。
+
+* `tools/build_hf_gguf.py`
+  * Hugging Face からモデルを取得し、`third_party/llama.cpp/convert_hf_to_gguf.py` で GGUF 化
+* `tools/run_ajimee_bench_rerank.py`
+  * Ajimee Bench 実行時に `--model` で rerank 用 GGUF を指定するラッパー
+
+前提（未導入の場合）:
+
+```bash
+python3 -m pip install -U huggingface_hub
+```
+
+`ku-nlp/gpt2-small-japanese-char` を GGUF 化（例: f16）:
+
+```bash
+python3 tools/build_hf_gguf.py --repo-id ku-nlp/gpt2-small-japanese-char --outtype f16
+```
+
+サイズを小さくしたい場合は、`--quantize-type` で llama.cpp の量子化タイプを指定できます（例: `Q4_K_M`）。
+
+注意:
+
+* `--convert-only` は **ダウンロード済みのローカルモデルを変換するだけ** のオプションです。
+* 新しい `--repo-id` を初回で使う場合（例: `ku-nlp/gpt2-medium-japanese-char`）は、まず `--convert-only` を外して実行し、`config.json` などのモデルファイルを取得してください。
+
+```bash
+python3 tools/build_hf_gguf.py --repo-id ku-nlp/gpt2-small-japanese-char --outtype f16 --convert-only --quantize-type Q4_K_M
+
+## zenz
+python3 tools/build_hf_gguf.py --repo-id Miwa-Keita/zenz-v3.1-small --outtype f16 --quantize-type Q4_K_M
+```
+
+必要に応じて `--quantized-outfile` で出力先を指定できます。
+
+生成先デフォルト:
+
+* `models/hf-rerank/ku-nlp--gpt2-small-japanese-char/gpt2-small-japanese-char.f16.gguf`
+
+モデル指定で Ajimee Bench 実行（記事寄せプリセット）:
+
+```bash
+python3 tools/run_ajimee_bench_rerank.py \
+  --items AJIMEE-Bench/JWTD_v2/v1/evaluation_items.json \
+  --subset no_context \
+  --n 10 --beam 50 --k 10 --timeout 20 \
+  --progress --every 20 \
+  --model ./models/hf-rerank/ku-nlp--gpt2-small-japanese-char/gpt2-small-japanese-char.f16.gguf \
+  --article_like
+
+  python3 tools/run_ajimee_bench_rerank.py \
+  --items AJIMEE-Bench/JWTD_v2/v1/evaluation_items.json \
+  --subset no_context \
+  --n 10 --beam 50 --k 10 --timeout 20 \
+  --progress --every 20 \
+  --model ./models/hf-rerank/Miwa-Keita--zenz-v3.1-small/zenz-v3.1-small.f16.q4_k_m.gguf \
+  --article_like
+```
+
+```bash
+python3 tools/run_ajimee_bench_rerank.py \
+  --items AJIMEE-Bench/JWTD_v2/v1/evaluation_items.json \
+  --subset no_context \
+  --n 20 --beam 100 --k 10 --timeout 20 \
+  --progress --every 20 \
+  --model ./models/hf-rerank/ku-nlp--gpt2-small-japanese-char/gpt2-small-japanese-char.f16.q4_k_m.gguf \
+  --article_like
+```
+
+`--article_like` を外すと、`--zenz_rerank_mode` / `--zenz_score_mode` / `--zenz_alpha` / `--zenz_beta` などを直接指定できます。
+
 2026-03-20 時点のローカル実測（`no_context` 100件, `n=10`, `beam=50`）:
 
 | System | Acc@1 | Acc@10 | MRR@10 | MinCER@1 | Elapsed |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `astar_bunsetsu_cli` | 0.4700 | 0.8000 | 0.5708 | 0.0596 | 17.97s |
-| `astar_zenz_rerank_cli` | 0.6300 | 0.8000 | 0.7053 | 0.0375 | 54.99s |
+| `astar_bunsetsu_cli` | 0.4900 | 0.7700 | 0.5789 | 0.0574 | 18.65s |
+| `astar_zenz_rerank_cli` (default) | 0.6000 | 0.7700 | 0.6762 | 0.0397 | 62.63s |
+| `astar_zenz_rerank_cli --zenz_article_like` | 0.6900 | 0.7700 | 0.7258 | 0.0293 | 61.59s |
 
-`Acc@10` は維持したまま、`Acc@1` と `MRR@10` が大きく改善しました。
+`Acc@10` は維持したまま、`Acc@1` と `MRR@10` が改善しました。今回の条件では `--zenz_article_like` が最良でした。
 
 ### 4) 文脈あり（100件）について
 
@@ -504,12 +587,44 @@ Outputs in `build/`:
 ./build/astar_zenz_rerank_cli --yomi_termid ./build/yomi_termid.louds --tango ./build/tango.louds --tokens ./build/token_array.bin --pos_table ./build/pos_table.bin --conn ./build/connection_single_column.bin --zenz_model ./models/zenz/zenz-v3.1-small.gguf --q "わたしのなまえはなかのです" --n 10 --beam 50 --zenz_rerank_mode linear_fuse --zenz_score_mode diff --zenz_alpha 0.35 --zenz_beta 1.0 --zenz_show_scores
 ```
 
+```bash
+./build/astar_zenz_rerank_cli \
+  --yomi_termid ./build/yomi_termid.louds \
+  --tango ./build/tango.louds \
+  --tokens ./build/token_array.bin \
+  --pos_table ./build/pos_table.bin \
+  --conn ./build/connection_single_column.bin \
+  --zenz_model ./models/zenz/zenz-v3.1-small.gguf \
+  --q "にわでいぬをかう" \
+  --n 10 --beam 50 \
+  --zenz_article_like
+```
+
 Measured locally on 100 `no_context` AJIMEE-Bench items (`n=10`, `beam=50`):
+
+Baseline:
+
+```bash
+python3 tools/run_ajimee_bench.py --items AJIMEE-Bench/JWTD_v2/v1/evaluation_items.json --subset no_context --n 10 --beam 50 --k 10 --timeout 20 --progress --every 20 --cmd './build/astar_bunsetsu_cli --yomi_termid ./build/yomi_termid.louds --tango ./build/tango.louds --tokens ./build/token_array.bin --pos_table ./build/pos_table.bin --conn ./build/connection_single_column.bin --q "{q}" --n {n} --beam {beam}'
+```
+
+zenz rerank (default):
+
+```bash
+python3 tools/run_ajimee_bench.py --items AJIMEE-Bench/JWTD_v2/v1/evaluation_items.json --subset no_context --n 10 --beam 50 --k 10 --timeout 20 --progress --every 20 --cmd './build/astar_zenz_rerank_cli --yomi_termid ./build/yomi_termid.louds --tango ./build/tango.louds --tokens ./build/token_array.bin --pos_table ./build/pos_table.bin --conn ./build/connection_single_column.bin --zenz_model ./models/zenz/zenz-v3.1-small.gguf --q "{q}" --n {n} --beam {beam}'
+```
+
+zenz rerank (article-like preset):
+
+```bash
+python3 tools/run_ajimee_bench.py --items AJIMEE-Bench/JWTD_v2/v1/evaluation_items.json --subset no_context --n 10 --beam 50 --k 10 --timeout 20 --progress --every 20 --cmd './build/astar_zenz_rerank_cli --yomi_termid ./build/yomi_termid.louds --tango ./build/tango.louds --tokens ./build/token_array.bin --pos_table ./build/pos_table.bin --conn ./build/connection_single_column.bin --zenz_model ./models/zenz/zenz-v3.1-small.gguf --q "{q}" --n {n} --beam {beam} --zenz_article_like'
+```
 
 | System | Acc@1 | Acc@10 | MRR@10 | MinCER@1 | Elapsed |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `astar_bunsetsu_cli` | 0.4700 | 0.8000 | 0.5708 | 0.0596 | 17.97s |
-| `astar_zenz_rerank_cli` | 0.6300 | 0.8000 | 0.7053 | 0.0375 | 54.99s |
+| `astar_bunsetsu_cli` | 0.4900 | 0.7700 | 0.5789 | 0.0574 | 18.65s |
+| `astar_zenz_rerank_cli` (default) | 0.6000 | 0.7700 | 0.6762 | 0.0397 | 62.63s |
+| `astar_zenz_rerank_cli --zenz_article_like` | 0.6900 | 0.7700 | 0.7258 | 0.0293 | 61.59s |
 
 ---
 

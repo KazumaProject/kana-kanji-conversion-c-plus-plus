@@ -221,6 +221,7 @@ static void usage(const char *argv0)
         << "      [--yomi_mode cps|cps_pred|cps_omit|all] [--pred_k K]\n"
         << "      [--zenz_rerank_mode zenz_only|linear_fuse] [--zenz_score_mode whole|diff]\n"
         << "      [--zenz_alpha A] [--zenz_beta B] [--zenz_use_raw]\n"
+        << "      [--zenz_article_like]\n"
         << "      [--zenz_left \"...\"] [--zenz_profile \"...\"] [--zenz_topic \"...\"] [--zenz_style \"...\"] [--zenz_preference \"...\"]\n"
         << "      [--zenz_n_ctx 512] [--zenz_n_batch 512] [--zenz_threads N] [--zenz_gpu_layers 0] [--zenz_no_mmap]\n"
         << "      [--typo on|off] [--typo_max_penalty N] [--typo_weight W] [--typo_max_out M]\n"
@@ -608,6 +609,14 @@ int main(int argc, char **argv)
             }
             if (a == "--zenz_use_raw")
             {
+                rerank_config.use_avg_logprob = false;
+                continue;
+            }
+            if (a == "--zenz_article_like")
+            {
+                // Preset close to the Qiita article behavior.
+                rerank_config.rerank_mode = kk::zenz::RerankMode::ZenzOnly;
+                rerank_config.score_mode = kk::zenz::ScoreMode::WholeCandidate;
                 rerank_config.use_avg_logprob = false;
                 continue;
             }
