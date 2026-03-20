@@ -333,20 +333,27 @@ python3 tools/run_ajimee_bench.py --items AJIMEE-Bench/JWTD_v2/v1/evaluation_ite
 python3 tools/run_ajimee_bench.py --items AJIMEE-Bench/JWTD_v2/v1/evaluation_items.json --subset no_context --n 10 --beam 50 --k 10 --timeout 20 --progress --every 20 --cmd './build/astar_bunsetsu_cli --yomi_termid ./build/yomi_termid.louds --tango ./build/tango.louds --tokens ./build/token_array.bin --pos_table ./build/pos_table.bin --conn ./build/connection_single_column.bin --q "{q}" --n {n} --beam {beam}'
 ```
 
-zenz rerank:
+zenz rerank（デフォルト設定）:
 
 ```bash
 python3 tools/run_ajimee_bench.py --items AJIMEE-Bench/JWTD_v2/v1/evaluation_items.json --subset no_context --n 10 --beam 50 --k 10 --timeout 20 --progress --every 20 --cmd './build/astar_zenz_rerank_cli --yomi_termid ./build/yomi_termid.louds --tango ./build/tango.louds --tokens ./build/token_array.bin --pos_table ./build/pos_table.bin --conn ./build/connection_single_column.bin --zenz_model ./models/zenz/zenz-v3.1-small.gguf --q "{q}" --n {n} --beam {beam}'
+```
+
+zenz rerank（記事寄せプリセット）:
+
+```bash
+python3 tools/run_ajimee_bench.py --items AJIMEE-Bench/JWTD_v2/v1/evaluation_items.json --subset no_context --n 10 --beam 50 --k 10 --timeout 20 --progress --every 20 --cmd './build/astar_zenz_rerank_cli --yomi_termid ./build/yomi_termid.louds --tango ./build/tango.louds --tokens ./build/token_array.bin --pos_table ./build/pos_table.bin --conn ./build/connection_single_column.bin --zenz_model ./models/zenz/zenz-v3.1-small.gguf --q "{q}" --n {n} --beam {beam} --zenz_article_like'
 ```
 
 2026-03-20 時点のローカル実測（`no_context` 100件, `n=10`, `beam=50`）:
 
 | System | Acc@1 | Acc@10 | MRR@10 | MinCER@1 | Elapsed |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `astar_bunsetsu_cli` | 0.4700 | 0.8000 | 0.5708 | 0.0596 | 17.97s |
-| `astar_zenz_rerank_cli` | 0.6300 | 0.8000 | 0.7053 | 0.0375 | 54.99s |
+| `astar_bunsetsu_cli` | 0.4900 | 0.7700 | 0.5789 | 0.0574 | 18.65s |
+| `astar_zenz_rerank_cli` (default) | 0.6000 | 0.7700 | 0.6762 | 0.0397 | 62.63s |
+| `astar_zenz_rerank_cli --zenz_article_like` | 0.6900 | 0.7700 | 0.7258 | 0.0293 | 61.59s |
 
-`Acc@10` は維持したまま、`Acc@1` と `MRR@10` が大きく改善しました。
+`Acc@10` は維持したまま、`Acc@1` と `MRR@10` が改善しました。今回の条件では `--zenz_article_like` が最良でした。
 
 ### 4) 文脈あり（100件）について
 
@@ -508,10 +515,29 @@ Outputs in `build/`:
 
 Measured locally on 100 `no_context` AJIMEE-Bench items (`n=10`, `beam=50`):
 
+Baseline:
+
+```bash
+python3 tools/run_ajimee_bench.py --items AJIMEE-Bench/JWTD_v2/v1/evaluation_items.json --subset no_context --n 10 --beam 50 --k 10 --timeout 20 --progress --every 20 --cmd './build/astar_bunsetsu_cli --yomi_termid ./build/yomi_termid.louds --tango ./build/tango.louds --tokens ./build/token_array.bin --pos_table ./build/pos_table.bin --conn ./build/connection_single_column.bin --q "{q}" --n {n} --beam {beam}'
+```
+
+zenz rerank (default):
+
+```bash
+python3 tools/run_ajimee_bench.py --items AJIMEE-Bench/JWTD_v2/v1/evaluation_items.json --subset no_context --n 10 --beam 50 --k 10 --timeout 20 --progress --every 20 --cmd './build/astar_zenz_rerank_cli --yomi_termid ./build/yomi_termid.louds --tango ./build/tango.louds --tokens ./build/token_array.bin --pos_table ./build/pos_table.bin --conn ./build/connection_single_column.bin --zenz_model ./models/zenz/zenz-v3.1-small.gguf --q "{q}" --n {n} --beam {beam}'
+```
+
+zenz rerank (article-like preset):
+
+```bash
+python3 tools/run_ajimee_bench.py --items AJIMEE-Bench/JWTD_v2/v1/evaluation_items.json --subset no_context --n 10 --beam 50 --k 10 --timeout 20 --progress --every 20 --cmd './build/astar_zenz_rerank_cli --yomi_termid ./build/yomi_termid.louds --tango ./build/tango.louds --tokens ./build/token_array.bin --pos_table ./build/pos_table.bin --conn ./build/connection_single_column.bin --zenz_model ./models/zenz/zenz-v3.1-small.gguf --q "{q}" --n {n} --beam {beam} --zenz_article_like'
+```
+
 | System | Acc@1 | Acc@10 | MRR@10 | MinCER@1 | Elapsed |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `astar_bunsetsu_cli` | 0.4700 | 0.8000 | 0.5708 | 0.0596 | 17.97s |
-| `astar_zenz_rerank_cli` | 0.6300 | 0.8000 | 0.7053 | 0.0375 | 54.99s |
+| `astar_bunsetsu_cli` | 0.4900 | 0.7700 | 0.5789 | 0.0574 | 18.65s |
+| `astar_zenz_rerank_cli` (default) | 0.6000 | 0.7700 | 0.6762 | 0.0397 | 62.63s |
+| `astar_zenz_rerank_cli --zenz_article_like` | 0.6900 | 0.7700 | 0.7258 | 0.0293 | 61.59s |
 
 ---
 
