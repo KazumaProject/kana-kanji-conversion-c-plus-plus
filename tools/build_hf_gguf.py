@@ -128,6 +128,22 @@ def ensure_convert_compat_config(model_dir: Path) -> None:
             print(f"[patch] added n_ctx={n_ctx} to {config_path}")
 
 
+def validate_model_dir_for_convert(model_dir: Path, convert_only: bool) -> None:
+    config_path = model_dir / "config.json"
+    if config_path.exists():
+        return
+
+    if convert_only:
+        raise RuntimeError(
+            "config.json not found in model directory. "
+            "--convert-only skips Hugging Face download, so local model files must already exist. "
+            f"Missing: {config_path}. "
+            "Run once without --convert-only (optionally with --force-download)."
+        )
+
+    raise RuntimeError(f"model download seems incomplete: missing {config_path}")
+
+
 def run_convert(convert_script: Path, model_dir: Path, outtype: str, outfile: Path, verbose: bool) -> None:
     cmd = [
         sys.executable,
@@ -204,6 +220,7 @@ def main() -> int:
             force=args.force_download,
         )
 
+    validate_model_dir_for_convert(model_dir=model_dir, convert_only=args.convert_only)
     ensure_convert_compat_config(model_dir)
 
     print(f"[convert] model_dir={model_dir}")

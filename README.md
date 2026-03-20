@@ -369,6 +369,11 @@ python3 tools/build_hf_gguf.py --repo-id ku-nlp/gpt2-small-japanese-char --outty
 
 サイズを小さくしたい場合は、`--quantize-type` で llama.cpp の量子化タイプを指定できます（例: `Q4_K_M`）。
 
+注意:
+
+* `--convert-only` は **ダウンロード済みのローカルモデルを変換するだけ** のオプションです。
+* 新しい `--repo-id` を初回で使う場合（例: `ku-nlp/gpt2-medium-japanese-char`）は、まず `--convert-only` を外して実行し、`config.json` などのモデルファイルを取得してください。
+
 ```bash
 python3 tools/build_hf_gguf.py --repo-id ku-nlp/gpt2-small-japanese-char --outtype f16 --convert-only --quantize-type Q4_K_M
 ```
